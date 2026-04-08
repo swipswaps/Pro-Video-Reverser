@@ -54,5 +54,8 @@ fi
 
 # ─── Step 4: Start server ─────────────────────────────────────────────────────
 echo "[SETUP] Initialization complete. Starting server..."
-echo "[INFO] MISSION CONTROL TUI available via: npm run tui"
+echo "----------------------------------------------------------------"
+echo " MISSION CONTROL TUI: Open a NEW terminal tab and run:"
+echo " npm run tui"
+echo "----------------------------------------------------------------"
 exec npx tsx server.ts

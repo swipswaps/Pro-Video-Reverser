@@ -59,8 +59,8 @@ const fileTree = grid.set(0, 9, 8, 3, contrib.tree, {
 const updateBox = grid.set(8, 9, 4, 3, blessed.box, {
   label: ' UPDATE STATUS ',
   content: 'Checking for updates...',
-  style: { fg: 'emerald' },
-  border: { type: 'line', fg: 'emerald' }
+  style: { fg: 'green' },
+  border: { type: 'line', fg: 'green' }
 });
 
 // 6. Logs
@@ -109,8 +109,8 @@ function update() {
         updateBox.style.border.fg = 'yellow';
       } else {
         updateBox.setContent('{center}System Up to Date{/center}');
-        updateBox.style.fg = 'emerald';
-        updateBox.style.border.fg = 'emerald';
+        updateBox.style.fg = 'green';
+        updateBox.style.border.fg = 'green';
       }
     } catch (e) {
       updateBox.setContent('{center}Update Check Failed{/center}');
