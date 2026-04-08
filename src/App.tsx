@@ -35,6 +35,12 @@ export default function App() {
   const [hasUpdate, setHasUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [jobFiles, setJobFiles] = useState<{ download: any[], chunks: any[], reversed: any[], final: any[] } | null>(null);
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
+    download: true,
+    chunks: false,
+    reversed: false,
+    final: true
+  });
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -400,11 +406,13 @@ export default function App() {
                           className="rounded-lg overflow-hidden border border-white/10 bg-black relative"
                         >
                           <video 
+                            key={job.id}
                             controls 
                             playsInline
                             className="w-full aspect-video"
+                            preload="metadata"
                           >
-                            <source src={`/api/download/${job.id}?preview=true`} type="video/mp4" />
+                            <source src={`/api/download/${job.id}?preview=true&t=${Date.now()}`} type="video/mp4" />
                             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-8 text-center">
                               <AlertCircle className="w-8 h-8 text-amber-500 mb-4" />
                               <p className="text-xs font-mono text-white/60">
@@ -444,10 +452,31 @@ export default function App() {
                   {/* Forensic File Explorer */}
                   <div className="mt-6 bg-black/20 rounded-xl p-4 border border-white/5">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-[0.2em] flex items-center gap-2">
-                        <Folder className="w-3 h-3" />
-                        Forensic Staging Area
-                      </h3>
+                      <div className="flex items-center gap-4">
+                        <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-[0.2em] flex items-center gap-2">
+                          <Folder className="w-3 h-3" />
+                          Forensic Staging Area
+                        </h3>
+                        <button 
+                          onClick={() => {
+                            // Trigger a refresh of job files
+                            const fetchFiles = async () => {
+                              if (!job) return;
+                              try {
+                                const res = await fetch(`/api/jobs/${job.id}/files`);
+                                if (res.ok) {
+                                  const data = await res.json();
+                                  setJobFiles(data);
+                                }
+                              } catch (e) {}
+                            };
+                            fetchFiles();
+                          }}
+                          className="text-[9px] font-mono text-white/20 hover:text-emerald-500 transition-colors uppercase tracking-widest"
+                        >
+                          [ Refresh ]
+                        </button>
+                      </div>
                       <button 
                         onClick={() => setShowExplorer(!showExplorer)}
                         className="text-[9px] font-mono text-emerald-500 uppercase tracking-widest hover:text-emerald-400 transition-colors"
@@ -460,30 +489,60 @@ export default function App() {
                       <motion.div 
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4"
+                        className="mt-4 space-y-2"
                       >
                         {[
-                          { title: "Download Source", files: jobFiles.download },
-                          { title: "Input Chunks", files: jobFiles.chunks },
-                          { title: "Reversed Chunks", files: jobFiles.reversed },
-                          { title: "Final Master", files: jobFiles.final }
-                        ].map((section, idx) => (
-                          <div key={idx} className="bg-black/40 border border-white/5 rounded-lg p-3">
-                            <h4 className="text-[9px] font-mono text-white/30 uppercase tracking-widest mb-2 border-b border-white/5 pb-1">
-                              {section.title}
-                            </h4>
-                            <div className="space-y-1 max-h-[120px] overflow-y-auto custom-scrollbar">
-                              {section.files.length === 0 ? (
-                                <p className="text-[9px] font-mono text-white/10 italic">No files detected</p>
-                              ) : (
-                                section.files.map((f, fidx) => (
-                                  <div key={fidx} className="flex justify-between items-center text-[9px] font-mono">
-                                    <span className="text-white/60 truncate max-w-[150px]">{f.name}</span>
-                                    <span className="text-white/20">{(f.size / 1024 / 1024).toFixed(2)}MB</span>
+                          { id: "download", title: "Download Source", files: jobFiles.download },
+                          { id: "chunks", title: "Input Chunks", files: jobFiles.chunks },
+                          { id: "reversed", title: "Reversed Chunks", files: jobFiles.reversed },
+                          { id: "final", title: "Final Master", files: jobFiles.final }
+                        ].map((section) => (
+                          <div key={section.id} className="bg-black/40 border border-white/5 rounded-lg overflow-hidden">
+                            <button 
+                              onClick={() => setExpandedFolders(prev => ({ ...prev, [section.id]: !prev[section.id] }))}
+                              className="w-full flex items-center justify-between p-3 hover:bg-white/5 transition-colors"
+                            >
+                              <div className="flex items-center gap-2">
+                                <ChevronRight className={`w-3 h-3 text-emerald-500 transition-transform ${expandedFolders[section.id] ? 'rotate-90' : ''}`} />
+                                <h4 className="text-[10px] font-mono text-white/60 uppercase tracking-widest">
+                                  {section.title}
+                                  <span className="ml-2 text-white/20 normal-case">({section.files.length} items)</span>
+                                </h4>
+                              </div>
+                            </button>
+                            
+                            <AnimatePresence>
+                              {expandedFolders[section.id] && (
+                                <motion.div 
+                                  initial={{ height: 0, opacity: 0 }}
+                                  animate={{ height: "auto", opacity: 1 }}
+                                  exit={{ height: 0, opacity: 0 }}
+                                  className="overflow-hidden"
+                                >
+                                  <div className="p-3 pt-0 space-y-1 border-t border-white/5">
+                                    {section.files.length === 0 ? (
+                                      <p className="text-[9px] font-mono text-white/10 italic py-2 pl-5">No files detected</p>
+                                    ) : (
+                                      section.files.map((f, fidx) => (
+                                        <div key={fidx} className="flex justify-between items-center text-[9px] font-mono group/file py-1 hover:bg-white/5 pl-5 rounded">
+                                          <span className="text-white/60 truncate max-w-[250px]">{f.name}</span>
+                                          <div className="flex items-center gap-3">
+                                            <span className="text-white/20">{(f.size / 1024 / 1024).toFixed(2)}MB</span>
+                                            <a 
+                                              href={section.id === "final" ? `/api/download/${job.id}` : `/api/download/${job.id}/chunks/${f.name}`}
+                                              className="opacity-0 group-hover/file:opacity-100 transition-opacity p-1 bg-emerald-500/10 rounded hover:bg-emerald-500/20"
+                                              title="Download Forensic Asset"
+                                            >
+                                              <Download className="w-2.5 h-2.5 text-emerald-500" />
+                                            </a>
+                                          </div>
+                                        </div>
+                                      ))
+                                    )}
                                   </div>
-                                ))
+                                </motion.div>
                               )}
-                            </div>
+                            </AnimatePresence>
                           </div>
                         ))}
                       </motion.div>

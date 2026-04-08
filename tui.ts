@@ -107,32 +107,20 @@ fileTree.on('select', (node: any) => {
   if (node.children) {
     node.extended = !node.extended;
     treeState[node.name] = node.extended;
-    screen.render();
+    // Force immediate refresh of tree data to show expansion
+    update();
   }
   logBox.log(`Selected: ${node.name}`);
   screen.render();
 });
 
-// Enable mouse clicking on tree rows
-fileTree.on('click', (data: any) => {
-  // Try to find the element clicked
-  const el = screen.focused;
-  if (el === fileTree.rows) {
-    const index = fileTree.rows.getItemIndex(el);
-    if (index !== -1) {
-      fileTree.rows.select(index);
-      fileTree.rows.emit('select', fileTree.rows.items[index], index);
-      screen.render();
-    }
-  }
-});
-
-fileTree.rows.on('element click', (el: any, data: any) => {
-  const index = fileTree.rows.getItemIndex(el);
+// Robust mouse clicking for tree
+fileTree.rows.on('click', () => {
+  const index = fileTree.rows.selected;
   if (index !== -1) {
-    fileTree.rows.select(index);
-    fileTree.rows.emit('select', fileTree.rows.items[index], index);
-    screen.render();
+    // blessed-contrib tree stores the nodes in an internal array that matches the list
+    // but it's easier to just trigger the 'select' event which contrib handles
+    fileTree.rows.emit('action', fileTree.rows.items[index], index);
   }
 });
 
@@ -148,6 +136,9 @@ const loadData = {
   x: Array.from({length: 20}, (_, i) => i.toString()),
   y: Array.from({length: 20}, () => 0)
 };
+
+let lastUpdateCheck = 0;
+const UPDATE_CHECK_INTERVAL = 1000 * 60 * 5; // 5 minutes
 
 function update() {
   // Update Load
@@ -172,12 +163,20 @@ function update() {
   try {
     const rows = db.prepare("SELECT id, status, progress, url FROM jobs ORDER BY created_at DESC LIMIT 5").all() as any[];
     
-    // Update Status Box
+    // Update Status Box (Throttled)
+    const now = Date.now();
+    if (now - lastUpdateCheck > UPDATE_CHECK_INTERVAL) {
+      lastUpdateCheck = now;
+      try {
+        // Run fetch in background to avoid blocking
+        execSync('git fetch &');
+      } catch (e) {}
+    }
+
     try {
-      execSync('git fetch');
       const status = execSync('git status -uno').toString();
       if (status.includes('Your branch is behind')) {
-        updateBox.setContent('{center}{bold}UPDATE AVAILABLE{/bold}\n\nRun "npm run dev" to apply updates.{/center}');
+        updateBox.setContent('{center}{bold}UPDATE AVAILABLE{/bold}\n\nClick here to apply.{/center}');
         updateBox.style.fg = 'yellow';
         updateBox.style.border.fg = 'yellow';
       } else {
@@ -185,9 +184,7 @@ function update() {
         updateBox.style.fg = 'green';
         updateBox.style.border.fg = 'green';
       }
-    } catch (e) {
-      updateBox.setContent('{center}Update Check Failed{/center}');
-    }
+    } catch (e) {}
 
     const tableData = rows.map(r => [r.id, r.status, `${Math.round(r.progress)}%`, r.url]);
     jobTable.setData({

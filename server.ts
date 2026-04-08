@@ -253,7 +253,10 @@ async function startServer() {
     }
     // For preview, we want to serve the file without forcing download if requested
     if (req.query.preview) {
-      res.type("video/mp4");
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+      res.setHeader("Accept-Ranges", "bytes");
       res.sendFile(job.outputFile);
     } else {
       res.download(job.outputFile);
