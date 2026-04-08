@@ -1,0 +1,5 @@
+{
+  "name": "Pro Video Reverser",
+  "description": "A robust full-stack video downloader and reverser using chunked processing for stability.",
+  "requestFramePermissions": []
+}
