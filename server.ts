@@ -483,20 +483,26 @@ async function runJob(jobId: string) {
     } else {
       job.status = "merging";
       saveJob(job);
-      log(jobId, "Merging reversed chunks...");
+      log(jobId, "Merging reversed chunks into master...");
       
       const listFilePath = path.join(jobDir, "list.txt");
       const reversedFiles = (await fs.readdir(reversedDir)).filter(f => f.endsWith(".mp4")).sort().reverse();
       const listContent = reversedFiles.map(f => `file '${path.join(reversedDir, f)}'`).join("\n");
       await fs.writeFile(listFilePath, listContent);
 
+      // Re-encode during merge to ensure absolute browser compatibility (H.264 High Profile, YUV420P)
       await runCommand("ffmpeg", [
         "-y", "-f", "concat", "-safe", "0", "-i", listFilePath,
-        "-c", "copy",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-preset", "ultrafast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
         finalOutputPath
       ], (msg) => log(jobId, msg));
 
-      log(jobId, "Merging complete");
+      log(jobId, "Merging complete. Master file ready.");
       await fs.remove(listFilePath);
     }
     

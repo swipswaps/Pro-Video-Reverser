@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs-extra';
 import os from 'os';
+import { execSync } from 'child_process';
 
 const DB_PATH = path.join(process.cwd(), 'forensic_logs', 'jobs.db');
 const JOBS_DIR = path.join(process.cwd(), 'jobs');
@@ -54,8 +55,16 @@ const fileTree = grid.set(0, 9, 8, 3, contrib.tree, {
   style: { text: "white" }
 });
 
-// 5. Logs
-const logBox = grid.set(8, 0, 4, 12, contrib.log, {
+// 5. Update Status
+const updateBox = grid.set(8, 9, 4, 3, blessed.box, {
+  label: ' UPDATE STATUS ',
+  content: 'Checking for updates...',
+  style: { fg: 'emerald' },
+  border: { type: 'line', fg: 'emerald' }
+});
+
+// 6. Logs
+const logBox = grid.set(8, 0, 4, 9, contrib.log, {
   fg: "green",
   selectedFg: "green",
   label: ' SYSTEM LOGS '
@@ -86,9 +95,27 @@ function update() {
     ]);
   } catch (e) {}
 
-  // Update Jobs
+  // Update Logs
   try {
     const rows = db.prepare("SELECT id, status, progress, url FROM jobs ORDER BY created_at DESC LIMIT 5").all() as any[];
+    
+    // Update Status Box
+    try {
+      execSync('git fetch');
+      const status = execSync('git status -uno').toString();
+      if (status.includes('Your branch is behind')) {
+        updateBox.setContent('{center}{bold}UPDATE AVAILABLE{/bold}\n\nRun "npm run dev" to apply updates.{/center}');
+        updateBox.style.fg = 'yellow';
+        updateBox.style.border.fg = 'yellow';
+      } else {
+        updateBox.setContent('{center}System Up to Date{/center}');
+        updateBox.style.fg = 'emerald';
+        updateBox.style.border.fg = 'emerald';
+      }
+    } catch (e) {
+      updateBox.setContent('{center}Update Check Failed{/center}');
+    }
+
     const tableData = rows.map(r => [r.id, r.status, `${Math.round(r.progress)}%`, r.url]);
     jobTable.setData({
       headers: ['JOB ID', 'STATUS', 'PROGRESS', 'SOURCE URL'],

@@ -222,7 +222,7 @@ export default function App() {
             onClick={() => setIsTuiMode(!isTuiMode)}
             className={`ml-4 px-3 py-1 rounded border text-[10px] font-mono uppercase tracking-widest transition-colors ${isTuiMode ? 'bg-emerald-500 text-black border-emerald-500' : 'bg-transparent text-white/40 border-white/10 hover:border-emerald-500/50'}`}
           >
-            {isTuiMode ? "Exit TUI Mode" : "TUI Mode"}
+            {isTuiMode ? "Exit Telemetry" : "Telemetry View"}
           </button>
         </div>
       </header>
@@ -233,13 +233,16 @@ export default function App() {
             <div className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
             <span className="text-[10px] font-mono text-emerald-400 uppercase tracking-widest">Update Available: New forensic features staged on GitHub</span>
           </div>
-          <button 
-            onClick={applyUpdate}
-            disabled={isUpdating}
-            className="bg-emerald-500 hover:bg-emerald-400 text-black text-[9px] font-bold px-4 py-1 rounded uppercase tracking-widest transition-all disabled:opacity-50"
-          >
-            {isUpdating ? "Applying..." : "1-Click Update"}
-          </button>
+          <div className="flex items-center gap-4">
+            <p className="text-[9px] font-mono text-white/40 uppercase tracking-widest">Apply via terminal or button:</p>
+            <button 
+              onClick={applyUpdate}
+              disabled={isUpdating}
+              className="bg-emerald-500 hover:bg-emerald-400 text-black text-[9px] font-bold px-4 py-1 rounded uppercase tracking-widest transition-all disabled:opacity-50"
+            >
+              {isUpdating ? "Applying..." : "1-Click Update"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -248,7 +251,10 @@ export default function App() {
           <section className="space-y-6 font-mono">
             <div className="bg-black border border-emerald-500/30 p-4 shadow-[0_0_20px_rgba(16,185,129,0.1)]">
               <div className="flex justify-between items-center mb-4 border-b border-emerald-500/20 pb-2">
-                <span className="text-emerald-500 text-xs uppercase tracking-[0.3em]">System.Telemetry.v1</span>
+                <div className="flex items-center gap-4">
+                  <span className="text-emerald-500 text-xs uppercase tracking-[0.3em]">System.Telemetry.v1</span>
+                  <span className="text-white/20 text-[9px] border-l border-white/10 pl-4">REAL TUI: <code className="text-emerald-400">npm run tui</code> IN TERMINAL</span>
+                </div>
                 <span className="text-emerald-500/40 text-[9px]">{new Date().toISOString()}</span>
               </div>
               <div className="grid grid-cols-4 gap-8">
