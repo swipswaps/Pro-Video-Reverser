@@ -43,13 +43,7 @@ interface Job {
   };
 }
 
-// Badge label and color per section
-const SECTION_META: Record<string, { label: string; badge: string; color: string }> = {
-  download: { label: "Source",   badge: "SOURCE",  color: "text-sky-400"     },
-  chunks:   { label: "Chunks",   badge: "CHUNK",   color: "text-amber-400"   },
-  reversed: { label: "Reversed", badge: "REV",     color: "text-violet-400"  },
-  final:    { label: "Master",   badge: "MASTER",  color: "text-emerald-400" },
-};
+
 
 export default function App() {
   const [url, setUrl] = useState("");
@@ -64,22 +58,8 @@ export default function App() {
   } | null>(null);
   const [hasUpdate, setHasUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [jobFiles, setJobFiles] = useState<{
-    download: any[];
-    chunks: any[];
-    reversed: any[];
-    final: any[];
-  } | null>(null);
   const [playbackError, setPlaybackError] = useState(false);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-
-  // All four folders open by default
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
-    download: true,
-    chunks:   true,
-    reversed: true,
-    final:    true,
-  });
 
   const logEndRef = useRef<HTMLDivElement>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -175,19 +155,48 @@ export default function App() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [job?.logs]);
 
-  // ── File explorer polling ──────────────────────────────────────────────────
+  // ── File Browser state ────────────────────────────────────────────────────
+  // Navigable filesystem browser — starts at the jobs directory, user can
+  // navigate into/out of any directory under /home.
+  const [browserPath, setBrowserPath] = useState<string | null>(null);
+  const [browserData, setBrowserData] = useState<{
+    path: string;
+    parent: string | null;
+    dirs: { name: string; path: string }[];
+    files: { name: string; size: number; mtime: string; path: string }[];
+  } | null>(null);
+  const [browserLoading, setBrowserLoading] = useState(false);
+
+  const browseTo = React.useCallback(async (targetPath: string) => {
+    setBrowserLoading(true);
+    try {
+      const res = await fetch(`/api/browse?path=${encodeURIComponent(targetPath)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setBrowserData(data);
+        setBrowserPath(data.path);
+      } else {
+        const err = await res.json();
+        console.error("Browse error:", err.error);
+      }
+    } catch (e) {
+      console.error("Browse fetch error:", e);
+    } finally {
+      setBrowserLoading(false);
+    }
+  }, []);
+
+  // Initialize browser at jobs dir on mount
   useEffect(() => {
-    if (!job) return;
-    const fetchFiles = async () => {
-      try {
-        const res = await fetch(`/api/jobs/${job.id}/files`);
-        if (res.ok) setJobFiles(await res.json());
-      } catch (e) {}
-    };
-    fetchFiles();
-    const interval = setInterval(fetchFiles, 5000);
-    return () => clearInterval(interval);
-  }, [job?.id]);
+    browseTo("/home/owner/Documents");
+  }, []);
+
+  // When job completes, navigate browser into that job's folder
+  useEffect(() => {
+    if (job?.status === "completed" && job.id) {
+      browseTo(`/home/owner/Documents/47911b4f-b8b8-4453-90c9-360918fbf53a/Pro-Video-Reverser/jobs/${job.id}`);
+    }
+  }, [job?.status, job?.id]);
 
   // ── Reset playback error when file changes ─────────────────────────────────
   useEffect(() => {
@@ -237,7 +246,6 @@ export default function App() {
         setJob(null);
         setCurrentJobId(null);
         setSelectedFilePath(null);
-        setJobFiles(null);
         setPlaybackError(false);
         localStorage.removeItem("currentJobId");
       } else {
@@ -284,16 +292,6 @@ export default function App() {
   }, [selectedFilePath, job?.outputFile]);
 
   const playerFilename = (selectedFilePath || job?.outputFile || "").split("/").pop() || null;
-
-  // ── File Explorer sections ─────────────────────────────────────────────────
-  const sections = jobFiles
-    ? [
-        { id: "download", files: jobFiles.download },
-        { id: "chunks",   files: jobFiles.chunks   },
-        { id: "reversed", files: jobFiles.reversed  },
-        { id: "final",    files: jobFiles.final     },
-      ]
-    : [];
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-[#e4e3e0] font-sans selection:bg-emerald-500/30">
@@ -473,123 +471,154 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── File Explorer ── */}
+          {/* ── File Browser ── */}
           <div className="bg-[#141414] border border-white/10 rounded-xl p-4 shadow-2xl">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3">
               <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-[0.2em] flex items-center gap-2">
                 <Folder className="w-3 h-3" />
-                File Explorer
+                File Browser
               </h3>
               <button
-                onClick={async () => {
-                  if (!job) return;
-                  try {
-                    const res = await fetch(`/api/jobs/${job.id}/files`);
-                    if (res.ok) setJobFiles(await res.json());
-                  } catch (e) {}
-                }}
+                onClick={() => browserPath && browseTo(browserPath)}
                 className="text-[9px] font-mono text-white/20 hover:text-emerald-500 transition-colors uppercase tracking-widest"
               >
-                [ Refresh ]
+                {browserLoading ? "Loading..." : "[ Refresh ]"}
               </button>
             </div>
 
-            <div className="space-y-2 max-h-[520px] overflow-y-auto custom-scrollbar pr-1">
-              {sections.length > 0 ? (
-                sections.map(({ id, files }) => {
-                  const meta = SECTION_META[id];
-                  const isExpanded = expandedFolders[id];
+            {/* Breadcrumb / path bar */}
+            {browserData && (
+              <div className="flex items-center gap-1 mb-3 overflow-x-auto pb-1 custom-scrollbar">
+                {browserData.parent && (
+                  <button
+                    onClick={() => browseTo(browserData.parent!)}
+                    className="flex-shrink-0 text-[9px] font-mono text-white/30 hover:text-emerald-400 transition-colors px-1.5 py-1 rounded hover:bg-white/5"
+                    title="Go up"
+                  >
+                    ↑ ..
+                  </button>
+                )}
+                {browserData.path.split("/").filter(Boolean).map((segment, i, arr) => {
+                  const segPath = "/" + arr.slice(0, i + 1).join("/");
+                  const isLast = i === arr.length - 1;
                   return (
-                    <div key={id} className="bg-black/40 border border-white/5 rounded-lg overflow-hidden">
-                      {/* Section header */}
+                    <React.Fragment key={segPath}>
+                      {i > 0 && <span className="text-white/15 text-[9px] font-mono flex-shrink-0">/</span>}
                       <button
-                        onClick={() => setExpandedFolders(prev => ({ ...prev, [id]: !prev[id] }))}
-                        className="w-full flex items-center justify-between p-2.5 hover:bg-white/5 transition-colors"
+                        onClick={() => !isLast && browseTo(segPath)}
+                        className={`flex-shrink-0 text-[9px] font-mono px-1 py-0.5 rounded transition-colors ${
+                          isLast
+                            ? "text-emerald-400 cursor-default"
+                            : "text-white/30 hover:text-emerald-400 hover:bg-white/5"
+                        }`}
                       >
-                        <div className="flex items-center gap-2">
-                          <ChevronRight className={`w-3 h-3 text-emerald-500 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
-                          <span className="text-[10px] font-mono text-white/60 uppercase tracking-widest">{meta.label}</span>
-                          <span className={`text-[8px] font-mono px-1.5 py-0.5 rounded bg-white/5 ${meta.color} uppercase tracking-wider`}>
-                            {meta.badge}
-                          </span>
-                        </div>
-                        <span className="text-[9px] font-mono text-white/30 bg-white/5 px-2 py-0.5 rounded-full">
-                          {files.length}
-                        </span>
+                        {segment}
                       </button>
-
-                      <AnimatePresence>
-                        {isExpanded && (
-                          <motion.div
-                            initial={{ height: 0, opacity: 0 }}
-                            animate={{ height: "auto", opacity: 1 }}
-                            exit={{ height: 0, opacity: 0 }}
-                            transition={{ duration: 0.15 }}
-                            className="overflow-hidden"
-                          >
-                            <div className="border-t border-white/5">
-                              {files.length === 0 ? (
-                                <p className="text-[9px] font-mono text-white/15 italic px-5 py-3">
-                                  No files yet
-                                </p>
-                              ) : (
-                                <div className="divide-y divide-white/[0.03]">
-                                  {files.map((f, fidx) => {
-                                    const isActive = selectedFilePath === f.path;
-                                    return (
-                                      <div
-                                        key={fidx}
-                                        className={`flex items-center gap-2 px-3 py-2 transition-colors ${isActive ? "bg-emerald-500/10 border-l-2 border-emerald-500" : "hover:bg-white/5 border-l-2 border-transparent"}`}
-                                      >
-                                        {/* Play button */}
-                                        <button
-                                          onClick={() => setSelectedFilePath(f.path)}
-                                          title={`Play ${f.name}`}
-                                          className={`flex-shrink-0 transition-colors ${isActive ? "text-emerald-400" : "text-white/30 hover:text-emerald-400"}`}
-                                        >
-                                          <PlayCircle className="w-4 h-4" />
-                                        </button>
-
-                                        {/* Filename */}
-                                        <button
-                                          onClick={() => setSelectedFilePath(f.path)}
-                                          className={`flex-1 text-left text-[10px] font-mono truncate transition-colors ${isActive ? "text-emerald-300 font-bold" : "text-white/60 hover:text-white"}`}
-                                          title={f.name}
-                                        >
-                                          {f.name}
-                                        </button>
-
-                                        {/* Size */}
-                                        <span className="flex-shrink-0 text-[8px] font-mono text-white/25 w-12 text-right">
-                                          {(f.size / 1024 / 1024).toFixed(1)}MB
-                                        </span>
-
-                                        {/* Download */}
-                                        <a
-                                          href={`/api/media?path=${encodeURIComponent(f.path)}`}
-                                          download={f.name}
-                                          title={`Download ${f.name}`}
-                                          className="flex-shrink-0 text-white/25 hover:text-emerald-400 transition-colors"
-                                          onClick={(e) => e.stopPropagation()}
-                                        >
-                                          <Download className="w-3.5 h-3.5" />
-                                        </a>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
+                    </React.Fragment>
                   );
-                })
-              ) : (
-                <p className="text-[10px] font-mono text-white/10 italic text-center py-8">
-                  No job data available
-                </p>
+                })}
+              </div>
+            )}
+
+            <div className="space-y-0.5 max-h-[460px] overflow-y-auto custom-scrollbar">
+              {!browserData && !browserLoading && (
+                <p className="text-[10px] font-mono text-white/10 italic text-center py-8">Initializing browser...</p>
+              )}
+              {browserLoading && (
+                <div className="flex items-center justify-center py-8 gap-2 text-white/20">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span className="text-[10px] font-mono">Loading...</span>
+                </div>
+              )}
+              {browserData && !browserLoading && (
+                <>
+                  {/* Directories */}
+                  {browserData.dirs.map((dir) => (
+                    <button
+                      key={dir.path}
+                      onClick={() => browseTo(dir.path)}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded hover:bg-white/5 transition-colors text-left group"
+                    >
+                      <Folder className="w-3.5 h-3.5 text-amber-400/60 flex-shrink-0 group-hover:text-amber-400 transition-colors" />
+                      <span className="text-[10px] font-mono text-white/50 group-hover:text-white/80 transition-colors truncate flex-1">
+                        {dir.name}
+                      </span>
+                      <ChevronRight className="w-3 h-3 text-white/15 flex-shrink-0" />
+                    </button>
+                  ))}
+
+                  {/* Separator if both dirs and files exist */}
+                  {browserData.dirs.length > 0 && browserData.files.length > 0 && (
+                    <div className="border-t border-white/5 my-1" />
+                  )}
+
+                  {/* Files */}
+                  {browserData.files.map((f) => {
+                    const isActive = selectedFilePath === f.path;
+                    const isVideo = /\.(mp4|webm|mkv|mov|avi)$/i.test(f.name);
+                    const sizeMb = (f.size / 1024 / 1024).toFixed(1);
+                    return (
+                      <div
+                        key={f.path}
+                        className={`flex items-center gap-2 px-3 py-2 rounded transition-colors ${
+                          isActive
+                            ? "bg-emerald-500/10 border border-emerald-500/30"
+                            : "hover:bg-white/5 border border-transparent"
+                        }`}
+                      >
+                        {/* Play button — only for video files */}
+                        {isVideo ? (
+                          <button
+                            onClick={() => setSelectedFilePath(f.path)}
+                            title={`Play ${f.name}`}
+                            className={`flex-shrink-0 transition-colors ${isActive ? "text-emerald-400" : "text-white/25 hover:text-emerald-400"}`}
+                          >
+                            <PlayCircle className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <span className="flex-shrink-0 w-4 h-4 flex items-center justify-center">
+                            <span className="w-1.5 h-1.5 rounded-full bg-white/10" />
+                          </span>
+                        )}
+
+                        {/* Filename */}
+                        <button
+                          onClick={() => isVideo && setSelectedFilePath(f.path)}
+                          className={`flex-1 text-left text-[10px] font-mono truncate transition-colors ${
+                            isActive
+                              ? "text-emerald-300 font-bold"
+                              : isVideo
+                                ? "text-white/60 hover:text-white"
+                                : "text-white/30 cursor-default"
+                          }`}
+                          title={f.name}
+                        >
+                          {f.name}
+                        </button>
+
+                        {/* Size */}
+                        <span className="flex-shrink-0 text-[8px] font-mono text-white/20 w-12 text-right">
+                          {sizeMb}MB
+                        </span>
+
+                        {/* Download */}
+                        <a
+                          href={`/api/media?path=${encodeURIComponent(f.path)}`}
+                          download={f.name}
+                          title={`Download ${f.name}`}
+                          className="flex-shrink-0 text-white/20 hover:text-emerald-400 transition-colors"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    );
+                  })}
+
+                  {browserData.dirs.length === 0 && browserData.files.length === 0 && (
+                    <p className="text-[9px] font-mono text-white/15 italic text-center py-6">Empty directory</p>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -690,10 +719,12 @@ export default function App() {
                               className={`w-3 h-3 rounded-sm transition-all duration-500 cursor-pointer ${isCompleted ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)] hover:bg-emerald-300" : "bg-white/5 hover:bg-white/10"}`}
                               title={isCompleted ? `Chunk ${i + 1}: Completed` : `Chunk ${i + 1}: Pending`}
                               onClick={() => {
-                                // Click chunk dot → play that reversed chunk if available
-                                if (isCompleted && jobFiles) {
-                                  const cf = jobFiles.reversed.find(f => f.name === chunkName);
-                                  if (cf) setSelectedFilePath(cf.path);
+                                // Navigate browser to the reversed folder for this job
+                                // so user can click the specific chunk file
+                                if (isCompleted && job) {
+                                  browseTo(
+                                    `/home/owner/Documents/47911b4f-b8b8-4453-90c9-360918fbf53a/Pro-Video-Reverser/jobs/${job.id}/reversed`
+                                  );
                                 }
                               }}
                             />

@@ -414,6 +414,63 @@ async function startServer() {
     }
   });
 
+  // General-purpose filesystem browser.
+  // GET /api/browse?path=/absolute/path
+  // Returns: { path, parent, dirs, files }
+  // - dirs: navigable subdirectories
+  // - files: all files with name, size, mtime, path (absolute, safe to pass to /api/media)
+  // - parent: parent directory path, or null if at filesystem root
+  // Restricted to /home to prevent browsing /etc, /proc, etc.
+  const BROWSE_ROOT = "/home";
+  app.get("/api/browse", (req, res) => {
+    try {
+      let reqPath = (req.query.path as string) || JOBS_DIR;
+      // Normalize and restrict to BROWSE_ROOT
+      const resolved = path.resolve(reqPath);
+      if (!resolved.startsWith(BROWSE_ROOT)) {
+        return res.status(403).json({ error: `Browse restricted to ${BROWSE_ROOT}` });
+      }
+      if (!fs.existsSync(resolved)) {
+        return res.status(404).json({ error: "Path not found" });
+      }
+      const stat = fs.statSync(resolved);
+      if (!stat.isDirectory()) {
+        return res.status(400).json({ error: "Path is not a directory" });
+      }
+
+      const entries = fs.readdirSync(resolved);
+      const dirs: { name: string; path: string }[] = [];
+      const files: { name: string; size: number; mtime: Date; path: string }[] = [];
+
+      for (const entry of entries) {
+        if (entry.startsWith(".")) continue; // skip hidden
+        const fullPath = path.join(resolved, entry);
+        try {
+          const s = fs.statSync(fullPath);
+          if (s.isDirectory()) {
+            dirs.push({ name: entry, path: fullPath });
+          } else {
+            files.push({ name: entry, size: s.size, mtime: s.mtime, path: fullPath });
+          }
+        } catch {
+          // skip unreadable entries
+        }
+      }
+
+      dirs.sort((a, b) => a.name.localeCompare(b.name));
+      files.sort((a, b) => a.name.localeCompare(b.name));
+
+      const parentPath = path.dirname(resolved);
+      const parent = parentPath !== resolved && parentPath.startsWith(BROWSE_ROOT)
+        ? parentPath
+        : null;
+
+      res.json({ path: resolved, parent, dirs, files });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.get("/api/system/update-check", async (req, res) => {
     try {
       await execAsync("git fetch");
