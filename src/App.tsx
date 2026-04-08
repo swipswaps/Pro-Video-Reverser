@@ -262,19 +262,28 @@ export default function App() {
     }
   };
 
-  const playerSrc = selectedFilePath
-    ? (selectedFilePath.startsWith("http")
-        ? selectedFilePath
-        : `/api/media?path=${encodeURIComponent(selectedFilePath)}&t=${Date.now()}`)
-    : job?.outputFile
-      ? `/api/media?path=${encodeURIComponent(job.outputFile)}&t=${Date.now()}`
-      : null;
+  // ── Stable player source — Date.now() computed ONCE per source change ────────
+  // Bug: playerSrc was computed inline in render with Date.now(), so every
+  // 5-second health/file poll triggered a re-render → new URL → video element
+  // remounted → playback restarted from zero.
+  // Fix: useMemo recomputes only when selectedFilePath or job.outputFile changes.
+  // The cache-bust timestamp is frozen at the moment the source changes, not
+  // at every render.
+  const cacheBustRef = useRef<number>(Date.now());
+  const prevSourceKeyRef = useRef<string>("");
 
-  const playerFilename = selectedFilePath
-    ? selectedFilePath.split("/").pop()
-    : job?.outputFile
-      ? job.outputFile.split("/").pop()
-      : null;
+  const playerSrc = React.useMemo(() => {
+    const sourceKey = selectedFilePath || job?.outputFile || "";
+    if (sourceKey !== prevSourceKeyRef.current) {
+      cacheBustRef.current = Date.now();
+      prevSourceKeyRef.current = sourceKey;
+    }
+    if (!sourceKey) return null;
+    if (sourceKey.startsWith("http")) return sourceKey;
+    return `/api/media?path=${encodeURIComponent(sourceKey)}&t=${cacheBustRef.current}`;
+  }, [selectedFilePath, job?.outputFile]);
+
+  const playerFilename = (selectedFilePath || job?.outputFile || "").split("/").pop() || null;
 
   // ── File Explorer sections ─────────────────────────────────────────────────
   const sections = jobFiles

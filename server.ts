@@ -599,7 +599,7 @@ async function runJob(jobId: string) {
         "-segment_time", "60",
         "-reset_timestamps", "1",
         path.join(chunksDir, "part_%05d.mp4")
-      ], (msg) => log(jobId, msg));
+      ], (msg) => log(jobId, msg), "SPLIT");
 
       log(jobId, "Splitting complete");
       const newChunks = (await fs.readdir(chunksDir)).filter(f => f.endsWith(".mp4"));
@@ -645,11 +645,7 @@ async function runJob(jobId: string) {
         "-threads", "1",
         "-movflags", "+faststart",
         outputPath
-      ], (msg) => {
-        if (msg.includes("Error") || msg.includes("Unknown encoder") || msg.includes("Option") && msg.includes("not found")) {
-          log(jobId, `FFmpeg Error: ${msg}`);
-        }
-      });
+      ], (msg) => log(jobId, msg), `REVERSE ${i + 1}/${totalChunks}`);
       
       if (!job.chunks.completed.includes(chunk)) {
         job.chunks.completed.push(chunk);
@@ -687,7 +683,7 @@ async function runJob(jobId: string) {
       "-movflags", "+faststart",
       "-f", "mp4",
       finalOutputPath
-    ], (msg) => log(jobId, msg));
+    ], (msg) => log(jobId, msg), "MERGE");
 
     log(jobId, "Merging complete. Master file ready.");
     await fs.remove(listFilePath);
@@ -705,16 +701,40 @@ async function runJob(jobId: string) {
   }
 }
 
-function runCommand(command: string, args: string[], onLog: (msg: string) => void): Promise<void> {
+// phase: label prepended to every output line — e.g. "[SPLIT]", "[REVERSE 1/2]", "[MERGE]"
+// All stdout and stderr lines are forwarded to onLog with no filtering.
+// Previously the reversal loop only logged lines containing "Error" — all ffmpeg
+// progress lines were silently dropped, making it impossible to diagnose failures.
+function runCommand(command: string, args: string[], onLog: (msg: string) => void, phase = ""): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args);
-    
-    proc.stdout.on("data", (data) => onLog(data.toString().trim()));
-    proc.stderr.on("data", (data) => onLog(data.toString().trim()));
-    
+    const prefix = phase ? `[${phase}] ` : "";
+
+    const handleData = (data: Buffer) => {
+      // ffmpeg emits multiple lines in one data event — split and emit each
+      data.toString().split("\n").forEach(line => {
+        const trimmed = line.trim();
+        if (trimmed) onLog(`${prefix}${trimmed}`);
+      });
+    };
+
+    proc.stdout.on("data", handleData);
+    proc.stderr.on("data", handleData);
+
     proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} exited with code ${code}`));
+      if (code === 0) {
+        onLog(`${prefix}exited cleanly (code 0)`);
+        resolve();
+      } else {
+        const err = new Error(`${command} exited with code ${code}`);
+        onLog(`${prefix}ERROR: exited with code ${code}`);
+        reject(err);
+      }
+    });
+
+    proc.on("error", (err) => {
+      onLog(`${prefix}SPAWN ERROR: ${err.message}`);
+      reject(err);
     });
   });
 }
