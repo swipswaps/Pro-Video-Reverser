@@ -35,6 +35,7 @@ export default function App() {
   const [hasUpdate, setHasUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [jobFiles, setJobFiles] = useState<{ download: any[], chunks: any[], reversed: any[], final: any[] } | null>(null);
+  const [playbackError, setPlaybackError] = useState(false);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
     download: true,
@@ -176,6 +177,10 @@ export default function App() {
       return () => clearInterval(interval);
     }
   }, [job?.id]);
+
+  useEffect(() => {
+    setPlaybackError(false);
+  }, [selectedFilePath, job?.outputFile]);
 
   const deleteJob = async () => {
     if (!job) return;
@@ -323,32 +328,36 @@ export default function App() {
             
             <div className="aspect-video bg-black relative group">
               {selectedFilePath || (job?.outputFile && job.status === "completed") ? (
-                <video 
-                  key={selectedFilePath || job?.outputFile}
-                  controls 
-                  playsInline
-                  autoPlay
-                  className="w-full h-full"
-                  preload="auto"
-                  onError={(e) => {
-                    console.error("Video playback error", e);
-                  }}
-                >
-                  <source 
-                    src={selectedFilePath?.startsWith('http') ? selectedFilePath : (selectedFilePath ? `/api/media?path=${encodeURIComponent(selectedFilePath)}&t=${Date.now()}` : `/api/media?path=${encodeURIComponent(job?.outputFile || '')}&t=${Date.now()}`)} 
-                    type="video/mp4" 
-                  />
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 p-8 text-center">
-                    <AlertCircle className="w-8 h-8 text-rose-500 mb-4" />
-                    <p className="text-xs font-mono text-white/60">
-                      Playback Failed: Codec Mismatch
-                    </p>
-                    <p className="text-[10px] font-mono text-white/40 mt-2">
-                      The browser cannot decode this forensic asset. 
-                      Try the "Open in VLC" link below.
-                    </p>
-                  </div>
-                </video>
+                <div className="relative w-full h-full">
+                  <video 
+                    key={selectedFilePath || job?.outputFile}
+                    controls 
+                    playsInline
+                    autoPlay
+                    className="w-full h-full"
+                    preload="auto"
+                    onCanPlay={() => setPlaybackError(false)}
+                    onError={() => setPlaybackError(true)}
+                  >
+                    <source 
+                      src={selectedFilePath?.startsWith('http') ? selectedFilePath : (selectedFilePath ? `/api/media?path=${encodeURIComponent(selectedFilePath)}&t=${Date.now()}` : `/api/media?path=${encodeURIComponent(job?.outputFile || '')}&t=${Date.now()}`)} 
+                      type="video/mp4" 
+                    />
+                  </video>
+                  {playbackError && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/95 p-8 text-center z-10">
+                      <AlertCircle className="w-8 h-8 text-rose-500 mb-4" />
+                      <p className="text-xs font-mono text-white/60">
+                        Playback Failed: Codec Mismatch
+                      </p>
+                      <p className="text-[10px] font-mono text-white/40 mt-2 leading-relaxed">
+                        The browser cannot decode this forensic asset.<br/>
+                        This usually happens with stale MPEG-4 files.<br/>
+                        <span className="text-rose-400 font-bold">Action: Click "DELETE JOB" and re-run.</span>
+                      </p>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-white/10">
                   <Play className="w-12 h-12 mb-4 opacity-10" />
@@ -513,9 +522,10 @@ export default function App() {
                         <p className="text-[10px] text-white/40 font-mono truncate max-w-[200px]">JOB_ID: {job.id}</p>
                         <button 
                           onClick={deleteJob}
-                          className="text-[9px] font-mono text-rose-500/60 hover:text-rose-500 uppercase tracking-widest transition-colors"
+                          className="px-2 py-0.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-[9px] font-mono text-rose-400 hover:text-rose-300 uppercase tracking-widest transition-all rounded flex items-center gap-1"
                         >
-                          [ Delete Job ]
+                          <AlertCircle className="w-3 h-3" />
+                          Delete Job
                         </button>
                       </div>
                     </div>

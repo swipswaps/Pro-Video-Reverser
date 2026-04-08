@@ -419,6 +419,11 @@ async function runJob(jobId: string) {
     await fs.ensureDir(chunksDir);
     await fs.ensureDir(reversedDir);
 
+    // 0. System Check
+    const encoders = await runCommandCapture("ffmpeg -encoders");
+    const hasH264 = encoders.includes("libx264");
+    log(jobId, `Forensic Encoder Check: ${hasH264 ? "libx264 [OK]" : "libx264 [MISSING - FALLBACK ACTIVE]"}`);
+
     // 1. Download
     const downloadPath = path.join(downloadDir, "input.mp4");
     const downloadExists = await fs.pathExists(downloadPath);
