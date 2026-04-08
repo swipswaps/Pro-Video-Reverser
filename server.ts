@@ -488,36 +488,30 @@ async function runJob(jobId: string) {
       const inputPath = path.join(chunksDir, chunk);
       const outputPath = path.join(reversedDir, chunk);
       
-      if (await fs.pathExists(outputPath) && (await fs.stat(outputPath)).size > 0) {
-        log(jobId, `Chunk ${i + 1}/${totalChunks} already reversed, skipping.`);
-        job.chunks.completed.push(chunk);
-      } else {
-        // Forensic Throttling
-        let health = await SystemForensics.checkHealth();
-        while (health.load > 4.0 || health.psi > 20.0) {
-          log(jobId, `System load high (Load: ${health.load}, PSI: ${health.psi}%). Throttling...`);
-          await new Promise(r => setTimeout(r, 5000));
-          health = await SystemForensics.checkHealth();
+      log(jobId, `Reversing chunk ${i + 1}/${totalChunks}: ${chunk} using libx264...`);
+      
+      await runCommand("ffmpeg", [
+        "-y", "-i", inputPath,
+        "-vf", "reverse",
+        "-af", "areverse",
+        "-vcodec", "libx264",
+        "-acodec", "aac",
+        "-profile:v", "baseline",
+        "-level", "3.0",
+        "-pix_fmt", "yuv420p",
+        "-preset", "ultrafast",
+        "-tune", "fastdecode",
+        "-crf", "23",
+        "-threads", "1",
+        "-movflags", "+faststart",
+        outputPath
+      ], (msg) => {
+        if (msg.includes("Error") || msg.includes("Unknown encoder")) {
+          log(jobId, `FFmpeg Error: ${msg}`);
         }
-
-        log(jobId, `Reversing chunk ${i + 1}/${totalChunks}: ${chunk}`);
-        
-        await runCommand("ffmpeg", [
-          "-y", "-i", inputPath,
-          "-vf", "reverse",
-          "-af", "areverse",
-          "-c:v", "libx264",
-          "-profile:v", "baseline",
-          "-level", "3.0",
-          "-pix_fmt", "yuv420p",
-          "-c:a", "aac",
-          "-preset", "ultrafast",
-          "-tune", "fastdecode",
-          "-crf", "23",
-          "-threads", "1",
-          "-movflags", "+faststart",
-          outputPath
-        ], (msg) => {});
+      });
+      
+      if (!job.chunks.completed.includes(chunk)) {
         job.chunks.completed.push(chunk);
       }
       
@@ -529,39 +523,37 @@ async function runJob(jobId: string) {
 
     // 4. Merge
     const finalOutputPath = path.join(jobDir, "reversed_final.mp4");
-    if (await fs.pathExists(finalOutputPath) && (await fs.stat(finalOutputPath)).size > 0) {
-      log(jobId, "Final output already exists, skipping merge.");
-    } else {
-      job.status = "merging";
-      saveJob(job);
-      log(jobId, "Merging reversed chunks into master...");
-      
-      const listFilePath = path.join(jobDir, "list.txt");
-      const reversedFiles = (await fs.readdir(reversedDir)).filter(f => f.endsWith(".mp4")).sort().reverse();
-      const listContent = reversedFiles.map(f => `file '${path.join(reversedDir, f)}'`).join("\n");
-      await fs.writeFile(listFilePath, listContent);
+    job.status = "merging";
+    saveJob(job);
+    log(jobId, "Merging reversed chunks into master...");
+    
+    const listFilePath = path.join(jobDir, "list.txt");
+    const reversedFiles = (await fs.readdir(reversedDir)).filter(f => f.endsWith(".mp4")).sort().reverse();
+    const listContent = reversedFiles.map(f => `file '${path.join(reversedDir, f)}'`).join("\n");
+    await fs.writeFile(listFilePath, listContent);
 
-      // Re-encode during merge to ensure absolute browser compatibility (H.264 Baseline Profile, YUV420P)
-      await runCommand("ffmpeg", [
-        "-y", "-f", "concat", "-safe", "0", "-i", listFilePath,
-        "-c:v", "libx264",
-        "-profile:v", "baseline",
-        "-level", "3.0",
-        "-pix_fmt", "yuv420p",
-        "-preset", "ultrafast",
-        "-tune", "fastdecode",
-        "-crf", "23",
-        "-c:a", "aac",
-        "-ar", "44100",
-        "-ac", "2",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        finalOutputPath
-      ], (msg) => log(jobId, msg));
+    // Re-encode during merge to ensure absolute browser compatibility (H.264 Baseline Profile, YUV420P)
+    log(jobId, "Starting final merge with libx264 re-encoding...");
+    await runCommand("ffmpeg", [
+      "-y", "-f", "concat", "-safe", "0", "-i", listFilePath,
+      "-vcodec", "libx264",
+      "-acodec", "aac",
+      "-profile:v", "baseline",
+      "-level", "3.0",
+      "-pix_fmt", "yuv420p",
+      "-preset", "ultrafast",
+      "-tune", "fastdecode",
+      "-crf", "23",
+      "-ar", "44100",
+      "-ac", "2",
+      "-b:a", "128k",
+      "-movflags", "+faststart",
+      "-f", "mp4",
+      finalOutputPath
+    ], (msg) => log(jobId, msg));
 
-      log(jobId, "Merging complete. Master file ready.");
-      await fs.remove(listFilePath);
-    }
+    log(jobId, "Merging complete. Master file ready.");
+    await fs.remove(listFilePath);
     
     job.status = "completed";
     job.progress = 100;

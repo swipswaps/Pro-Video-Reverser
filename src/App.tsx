@@ -325,7 +325,6 @@ export default function App() {
               {selectedFilePath || (job?.outputFile && job.status === "completed") ? (
                 <video 
                   key={selectedFilePath || job?.outputFile}
-                  src={selectedFilePath?.startsWith('http') ? selectedFilePath : (selectedFilePath ? `/api/media?path=${encodeURIComponent(selectedFilePath)}&t=${Date.now()}` : `/api/media?path=${encodeURIComponent(job?.outputFile || '')}&t=${Date.now()}`)}
                   controls 
                   playsInline
                   autoPlay
@@ -335,6 +334,10 @@ export default function App() {
                     console.error("Video playback error", e);
                   }}
                 >
+                  <source 
+                    src={selectedFilePath?.startsWith('http') ? selectedFilePath : (selectedFilePath ? `/api/media?path=${encodeURIComponent(selectedFilePath)}&t=${Date.now()}` : `/api/media?path=${encodeURIComponent(job?.outputFile || '')}&t=${Date.now()}`)} 
+                    type="video/mp4" 
+                  />
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 p-8 text-center">
                     <AlertCircle className="w-8 h-8 text-rose-500 mb-4" />
                     <p className="text-xs font-mono text-white/60">
