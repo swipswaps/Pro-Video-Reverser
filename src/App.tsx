@@ -32,6 +32,24 @@ export default function App() {
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const discoverActiveJob = async () => {
+      try {
+        const res = await fetch("/api/jobs/active");
+        if (res.ok) {
+          const data = await res.json();
+          if (data) {
+            setCurrentJobId(data.id);
+            setJob(data);
+          }
+        }
+      } catch (e) {
+        console.error("Discovery error", e);
+      }
+    };
+    discoverActiveJob();
+  }, []);
+
+  useEffect(() => {
     const fetchHealth = async () => {
       try {
         const res = await fetch("/api/system/health");
@@ -251,6 +269,31 @@ export default function App() {
                       className={`h-full ${job.status === "failed" ? "bg-rose-500" : "bg-emerald-500"} shadow-[0_0_15px_rgba(16,185,129,0.5)]`}
                     />
                   </div>
+
+                  {/* Chunk Map */}
+                  {job.chunks && job.chunks.total > 0 && (
+                    <div className="mt-6 space-y-3">
+                      <div className="flex justify-between text-[9px] font-mono text-white/40 uppercase tracking-widest">
+                        <span>Forensic Chunk Map</span>
+                        <span>{job.chunks.completed.length} / {job.chunks.total} Verified</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {Array.from({ length: job.chunks.total }).map((_, i) => {
+                          const chunkName = `part_${String(i).padStart(5, '0')}.mp4`;
+                          const isCompleted = job.chunks?.completed.includes(chunkName);
+                          return (
+                            <div 
+                              key={i}
+                              className={`w-3 h-3 rounded-sm transition-all duration-500 ${
+                                isCompleted ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)]' : 'bg-white/5'
+                              }`}
+                              title={`Chunk ${i + 1}: ${isCompleted ? 'Reversed' : 'Pending'}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {job.status === "completed" && (
                     <motion.a

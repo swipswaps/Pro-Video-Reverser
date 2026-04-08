@@ -104,6 +104,11 @@ interface Job {
   logs: string[];
   outputFile?: string;
   error?: string;
+  chunks?: {
+    total: number;
+    completed: string[];
+    downloaded: boolean;
+  };
 }
 
 const jobs: Record<string, Job> = {};
@@ -184,6 +189,15 @@ async function startServer() {
     res.json({ jobId });
   });
 
+  app.get("/api/jobs/active", (req, res) => {
+    const activeJob = db.prepare("SELECT id FROM jobs WHERE status NOT IN ('completed', 'failed') ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
+    if (activeJob) {
+      const job = jobs[activeJob.id] || getJobFromDb(activeJob.id);
+      return res.json(job);
+    }
+    res.json(null);
+  });
+
   app.get("/api/jobs/:id", (req, res) => {
     let job = jobs[req.params.id];
     if (!job) {
@@ -251,6 +265,9 @@ async function runJob(jobId: string) {
   const reversedDir = path.join(jobDir, "reversed");
 
   try {
+    // Initialize chunk tracking
+    job.chunks = { total: 0, completed: [], downloaded: false };
+
     // Disk Space Guard
     const healthCheck = await SystemForensics.checkHealth();
     if (healthCheck.disk.available < 500) {
@@ -269,6 +286,7 @@ async function runJob(jobId: string) {
 
     if (downloadExists && downloadSize > 0) {
       log(jobId, "Existing download found, skipping download step.");
+      job.chunks.downloaded = true;
     } else {
       job.status = "downloading";
       saveJob(job);
@@ -286,6 +304,7 @@ async function runJob(jobId: string) {
         ]
       });
       log(jobId, "Download complete");
+      job.chunks.downloaded = true;
     }
     job.progress = 25;
     saveJob(job);
@@ -294,6 +313,7 @@ async function runJob(jobId: string) {
     const existingChunks = (await fs.readdir(chunksDir)).filter(f => f.endsWith(".mp4"));
     if (existingChunks.length > 0) {
       log(jobId, `Existing chunks found (${existingChunks.length}), skipping split step.`);
+      job.chunks.total = existingChunks.length;
     } else {
       job.status = "splitting";
       saveJob(job);
@@ -309,6 +329,8 @@ async function runJob(jobId: string) {
       ], (msg) => log(jobId, msg));
 
       log(jobId, "Splitting complete");
+      const newChunks = (await fs.readdir(chunksDir)).filter(f => f.endsWith(".mp4"));
+      job.chunks.total = newChunks.length;
     }
     job.progress = 40;
     saveJob(job);
@@ -318,6 +340,7 @@ async function runJob(jobId: string) {
     saveJob(job);
     const chunkFiles = (await fs.readdir(chunksDir)).filter(f => f.endsWith(".mp4")).sort();
     const totalChunks = chunkFiles.length;
+    job.chunks.total = totalChunks;
     log(jobId, `Processing ${totalChunks} chunks`);
 
     for (let i = 0; i < totalChunks; i++) {
@@ -327,6 +350,7 @@ async function runJob(jobId: string) {
       
       if (await fs.pathExists(outputPath) && (await fs.stat(outputPath)).size > 0) {
         log(jobId, `Chunk ${i + 1}/${totalChunks} already reversed, skipping.`);
+        job.chunks.completed.push(chunk);
       } else {
         // Forensic Throttling
         let health = await SystemForensics.checkHealth();
@@ -346,6 +370,7 @@ async function runJob(jobId: string) {
           "-threads", "1",
           outputPath
         ], (msg) => {});
+        job.chunks.completed.push(chunk);
       }
       
       job.progress = 40 + ((i + 1) / totalChunks) * 50;
