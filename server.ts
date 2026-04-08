@@ -78,11 +78,21 @@ class SystemForensics {
     }
   }
 
+  static async getZombieCount(): Promise<number> {
+    try {
+      const ps = await runCommandCapture("ps -ef | grep ffmpeg | grep -v grep | wc -l");
+      return parseInt(ps) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
   static async checkHealth() {
     const load = await this.getLoadAvg();
     const psi = await this.getPSICPU();
     const disk = await this.getDiskSpace();
-    return { load, psi, disk, timestamp: new Date().toISOString() };
+    const zombies = await this.getZombieCount();
+    return { load, psi, disk, zombies, timestamp: new Date().toISOString() };
   }
 }
 
@@ -215,7 +225,22 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    autoResumeJobs();
   });
+}
+
+async function autoResumeJobs() {
+  console.log("[RECOVERY] Scanning for interrupted jobs...");
+  const interruptedJobs = db.prepare("SELECT id FROM jobs WHERE status NOT IN ('completed', 'failed')").all() as { id: string }[];
+  
+  for (const row of interruptedJobs) {
+    const job = getJobFromDb(row.id);
+    if (job) {
+      console.log(`[RECOVERY] Resuming Job: ${job.id}`);
+      jobs[job.id] = job;
+      runJob(job.id);
+    }
+  }
 }
 
 async function runJob(jobId: string) {

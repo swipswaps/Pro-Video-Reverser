@@ -28,7 +28,7 @@ export default function App() {
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [systemHealth, setSystemHealth] = useState<{ load: number; psi: number; disk: { available: number; total: number } } | null>(null);
+  const [systemHealth, setSystemHealth] = useState<{ load: number; psi: number; disk: { available: number; total: number }; zombies: number } | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -133,6 +133,10 @@ export default function App() {
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${systemHealth && systemHealth.disk.available > 1024 ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} />
             DISK: {systemHealth ? (systemHealth.disk.available / 1024).toFixed(1) : "0.0"}GB FREE
+          </div>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${systemHealth && systemHealth.zombies === 0 ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} />
+            PROC: {systemHealth?.zombies || 0} ACTIVE
           </div>
           <div className="flex items-center gap-2">
             <Cpu className="w-3 h-3" />
