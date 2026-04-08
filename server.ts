@@ -243,6 +243,16 @@ async function startServer() {
     res.json(job);
   });
 
+  app.delete("/api/jobs/:id", async (req, res) => {
+    const { id } = req.params;
+    const jobDir = path.join(JOBS_DIR, id);
+    if (fs.existsSync(jobDir)) {
+      await fs.remove(jobDir);
+    }
+    delete jobs[id];
+    res.json({ success: true });
+  });
+
   app.get("/api/media", (req, res) => {
     const filePath = req.query.path as string;
     if (!filePath || !fs.existsSync(filePath)) {
@@ -544,6 +554,7 @@ async function runJob(jobId: string) {
         "-c:a", "aac",
         "-ar", "44100",
         "-ac", "2",
+        "-b:a", "128k",
         "-movflags", "+faststart",
         finalOutputPath
       ], (msg) => log(jobId, msg));

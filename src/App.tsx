@@ -177,6 +177,22 @@ export default function App() {
     }
   }, [job?.id]);
 
+  const deleteJob = async () => {
+    if (!job) return;
+    if (!confirm("Are you sure you want to delete this job and all its files?")) return;
+    try {
+      const res = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
+      if (res.ok) {
+        setJob(null);
+        setCurrentJobId(null);
+        setSelectedFilePath(null);
+        setJobFiles(null);
+      }
+    } catch (e) {
+      console.error("Delete error", e);
+    }
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case "completed": return "text-emerald-400";
@@ -309,13 +325,27 @@ export default function App() {
               {selectedFilePath || (job?.outputFile && job.status === "completed") ? (
                 <video 
                   key={selectedFilePath || job?.outputFile}
-                  src={selectedFilePath ? `/api/media?path=${encodeURIComponent(selectedFilePath)}&t=${Date.now()}` : `/api/media?path=${encodeURIComponent(job?.outputFile || '')}&t=${Date.now()}`}
+                  src={selectedFilePath?.startsWith('http') ? selectedFilePath : (selectedFilePath ? `/api/media?path=${encodeURIComponent(selectedFilePath)}&t=${Date.now()}` : `/api/media?path=${encodeURIComponent(job?.outputFile || '')}&t=${Date.now()}`)}
                   controls 
                   playsInline
                   autoPlay
                   className="w-full h-full"
                   preload="auto"
-                />
+                  onError={(e) => {
+                    console.error("Video playback error", e);
+                  }}
+                >
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 p-8 text-center">
+                    <AlertCircle className="w-8 h-8 text-rose-500 mb-4" />
+                    <p className="text-xs font-mono text-white/60">
+                      Playback Failed: Codec Mismatch
+                    </p>
+                    <p className="text-[10px] font-mono text-white/40 mt-2">
+                      The browser cannot decode this forensic asset. 
+                      Try the "Open in VLC" link below.
+                    </p>
+                  </div>
+                </video>
               ) : (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-white/10">
                   <Play className="w-12 h-12 mb-4 opacity-10" />
@@ -476,7 +506,15 @@ export default function App() {
                          <Loader2 className="w-4 h-4 animate-spin" />}
                         Status: {job.status}
                       </h3>
-                      <p className="text-[10px] text-white/40 font-mono mt-1 truncate max-w-[300px]">JOB_ID: {job.id}</p>
+                      <div className="flex items-center gap-3 mt-1">
+                        <p className="text-[10px] text-white/40 font-mono truncate max-w-[200px]">JOB_ID: {job.id}</p>
+                        <button 
+                          onClick={deleteJob}
+                          className="text-[9px] font-mono text-rose-500/60 hover:text-rose-500 uppercase tracking-widest transition-colors"
+                        >
+                          [ Delete Job ]
+                        </button>
+                      </div>
                     </div>
                     <div className="text-right">
                       <p className="text-2xl font-bold font-mono tracking-tighter">{Math.round(job.progress)}%</p>
