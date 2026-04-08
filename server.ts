@@ -201,6 +201,12 @@ async function startServer() {
     // Use a stable jobId based on URL hash for idempotency
     const jobId = crypto.createHash("md5").update(url).digest("hex");
     
+    // Force fresh start if job already exists but user is re-initializing
+    const jobDir = path.join(JOBS_DIR, jobId);
+    if (fs.existsSync(jobDir)) {
+      await fs.remove(jobDir);
+    }
+
     let job = getJobFromDb(jobId);
     if (job && (job.status !== "failed")) {
       jobs[jobId] = job; // Cache it
@@ -421,8 +427,11 @@ async function runJob(jobId: string) {
 
     // 0. System Check
     const encoders = await runCommandCapture("ffmpeg -encoders");
-    const hasH264 = encoders.includes("libx264");
-    log(jobId, `Forensic Encoder Check: ${hasH264 ? "libx264 [OK]" : "libx264 [MISSING - FALLBACK ACTIVE]"}`);
+    const hasLibx264 = encoders.includes("libx264");
+    const hasOpenH264 = encoders.includes("libopenh264");
+    const encoder = hasLibx264 ? "libx264" : (hasOpenH264 ? "libopenh264" : "mpeg4");
+    
+    log(jobId, `Forensic Encoder Check: ${encoder} selected (libx264: ${hasLibx264}, libopenh264: ${hasOpenH264})`);
 
     // 1. Download
     const downloadPath = path.join(downloadDir, "input.mp4");
@@ -499,10 +508,9 @@ async function runJob(jobId: string) {
         "-y", "-i", inputPath,
         "-vf", "reverse",
         "-af", "areverse",
-        "-vcodec", "libx264",
+        "-vcodec", encoder,
         "-acodec", "aac",
-        "-profile:v", "baseline",
-        "-level", "3.0",
+        ...(encoder === "libx264" ? ["-profile:v", "baseline", "-level", "3.0"] : []),
         "-pix_fmt", "yuv420p",
         "-preset", "ultrafast",
         "-tune", "fastdecode",
@@ -538,13 +546,12 @@ async function runJob(jobId: string) {
     await fs.writeFile(listFilePath, listContent);
 
     // Re-encode during merge to ensure absolute browser compatibility (H.264 Baseline Profile, YUV420P)
-    log(jobId, "Starting final merge with libx264 re-encoding...");
+    log(jobId, `Starting final merge with ${encoder} re-encoding...`);
     await runCommand("ffmpeg", [
       "-y", "-f", "concat", "-safe", "0", "-i", listFilePath,
-      "-vcodec", "libx264",
+      "-vcodec", encoder,
       "-acodec", "aac",
-      "-profile:v", "baseline",
-      "-level", "3.0",
+      ...(encoder === "libx264" ? ["-profile:v", "baseline", "-level", "3.0"] : []),
       "-pix_fmt", "yuv420p",
       "-preset", "ultrafast",
       "-tune", "fastdecode",

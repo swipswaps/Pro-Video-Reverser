@@ -184,14 +184,19 @@ export default function App() {
 
   const deleteJob = async () => {
     if (!job) return;
-    if (!confirm("Are you sure you want to delete this job and all its files?")) return;
+    // Removed confirm() as it may be blocked in iFrame
     try {
+      console.log("Deleting job:", job.id);
       const res = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
       if (res.ok) {
+        console.log("Job deleted successfully");
         setJob(null);
         setCurrentJobId(null);
         setSelectedFilePath(null);
         setJobFiles(null);
+        setPlaybackError(false);
+      } else {
+        console.error("Failed to delete job:", await res.text());
       }
     } catch (e) {
       console.error("Delete error", e);
