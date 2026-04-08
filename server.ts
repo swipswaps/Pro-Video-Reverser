@@ -253,6 +253,7 @@ async function startServer() {
     }
     // For preview, we want to serve the file without forcing download if requested
     if (req.query.preview) {
+      res.type("video/mp4");
       res.sendFile(job.outputFile);
     } else {
       res.download(job.outputFile);
@@ -460,9 +461,12 @@ async function runJob(jobId: string) {
           "-vf", "reverse",
           "-af", "areverse",
           "-c:v", "libx264",
+          "-profile:v", "baseline",
+          "-level", "3.0",
           "-pix_fmt", "yuv420p",
           "-c:a", "aac",
           "-preset", "ultrafast",
+          "-tune", "fastdecode",
           "-crf", "23",
           "-threads", "1",
           outputPath
@@ -490,12 +494,15 @@ async function runJob(jobId: string) {
       const listContent = reversedFiles.map(f => `file '${path.join(reversedDir, f)}'`).join("\n");
       await fs.writeFile(listFilePath, listContent);
 
-      // Re-encode during merge to ensure absolute browser compatibility (H.264 High Profile, YUV420P)
+      // Re-encode during merge to ensure absolute browser compatibility (H.264 Baseline Profile, YUV420P)
       await runCommand("ffmpeg", [
         "-y", "-f", "concat", "-safe", "0", "-i", listFilePath,
         "-c:v", "libx264",
+        "-profile:v", "baseline",
+        "-level", "3.0",
         "-pix_fmt", "yuv420p",
         "-preset", "ultrafast",
+        "-tune", "fastdecode",
         "-crf", "23",
         "-c:a", "aac",
         "-movflags", "+faststart",

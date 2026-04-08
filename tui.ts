@@ -12,8 +12,17 @@ const db = new Database(DB_PATH);
 
 const screen = blessed.screen({
   smartCSR: true,
-  title: 'PRO VIDEO REVERSER - TUI MISSION CONTROL'
+  title: 'PRO VIDEO REVERSER - TUI MISSION CONTROL',
+  mouse: true,
+  warnings: true,
+  fullUnicode: true,
+  dockBorders: true
 });
+
+// Enable mouse and input explicitly
+screen.enableMouse();
+screen.enableKeys();
+screen.enableInput();
 
 const grid = new contrib.grid({rows: 12, cols: 12, screen: screen});
 
@@ -52,7 +61,11 @@ const jobTable = grid.set(4, 0, 4, 9, contrib.table, {
 // 4. File Explorer
 const fileTree = grid.set(0, 9, 8, 3, contrib.tree, {
   label: ' FORENSIC FILE EXPLORER ',
-  style: { text: "white" }
+  style: { text: "white" },
+  keys: true,
+  vi: true,
+  mouse: true,
+  interactive: true
 });
 
 // 5. Update Status
@@ -60,14 +73,74 @@ const updateBox = grid.set(8, 9, 4, 3, blessed.box, {
   label: ' UPDATE STATUS ',
   content: 'Checking for updates...',
   style: { fg: 'green' },
-  border: { type: 'line', fg: 'green' }
+  border: { type: 'line', fg: 'green' },
+  hoverText: ' Click to apply updates if available '
+});
+
+updateBox.on('click', () => {
+  if (updateBox.content.includes('UPDATE AVAILABLE')) {
+    updateBox.setContent('{center}{bold}APPLYING UPDATE...{/bold}\n\nSystem will restart.{/center}');
+    screen.render();
+    try {
+      execSync('git pull');
+      setTimeout(() => process.exit(0), 1000);
+    } catch (e) {
+      updateBox.setContent('{center}Update Failed{/center}');
+      screen.render();
+    }
+  }
 });
 
 // 6. Logs
 const logBox = grid.set(8, 0, 4, 9, contrib.log, {
   fg: "green",
   selectedFg: "green",
-  label: ' SYSTEM LOGS '
+  label: ' SYSTEM LOGS ',
+  interactive: true,
+  mouse: true
+});
+
+const treeState: Record<string, boolean> = {};
+
+// Handle Tree interactions
+fileTree.on('select', (node: any) => {
+  if (node.children) {
+    node.extended = !node.extended;
+    treeState[node.name] = node.extended;
+    screen.render();
+  }
+  logBox.log(`Selected: ${node.name}`);
+  screen.render();
+});
+
+// Enable mouse clicking on tree rows
+fileTree.on('click', (data: any) => {
+  // Try to find the element clicked
+  const el = screen.focused;
+  if (el === fileTree.rows) {
+    const index = fileTree.rows.getItemIndex(el);
+    if (index !== -1) {
+      fileTree.rows.select(index);
+      fileTree.rows.emit('select', fileTree.rows.items[index], index);
+      screen.render();
+    }
+  }
+});
+
+fileTree.rows.on('element click', (el: any, data: any) => {
+  const index = fileTree.rows.getItemIndex(el);
+  if (index !== -1) {
+    fileTree.rows.select(index);
+    fileTree.rows.emit('select', fileTree.rows.items[index], index);
+    screen.render();
+  }
+});
+
+// Handle Table interactions
+jobTable.rows.on('select', (item: any, index: number) => {
+  const jobId = jobTable.rows.items[index].content.split(/\s+/)[0];
+  logBox.log(`Focusing Job: ${jobId}`);
+  screen.render();
 });
 
 const loadData = {
@@ -139,6 +212,7 @@ function update() {
           if (fs.existsSync(dPath)) {
             treeData.children[d] = {
               name: d,
+              extended: treeState[d] || false,
               children: fs.readdirSync(dPath).slice(0, 10).map(f => ({name: f}))
             };
           }

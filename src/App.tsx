@@ -215,7 +215,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2 text-emerald-400 font-mono text-[10px] border-l border-white/10 pl-4">
             <TerminalIcon className="w-3 h-3" />
-            TUI: npm run tui
+            TUI: npm run tui (Now Clickable!)
           </div>
         </div>
       </header>
@@ -401,33 +401,60 @@ export default function App() {
                         >
                           <video 
                             controls 
+                            playsInline
                             className="w-full aspect-video"
-                            src={`/api/download/${job.id}?preview=true`}
                           >
+                            <source src={`/api/download/${job.id}?preview=true`} type="video/mp4" />
                             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-8 text-center">
                               <AlertCircle className="w-8 h-8 text-amber-500 mb-4" />
                               <p className="text-xs font-mono text-white/60">
-                                Browser codec mismatch (MPEG-4 Part 2 detected).
+                                Browser codec mismatch or playback error.
                               </p>
                               <p className="text-[10px] font-mono text-white/40 mt-2">
-                                Use VLC/MPlayer or download the final result.
+                                Use the "Copy Stream URL" button below to play in VLC.
                               </p>
                             </div>
                           </video>
+                          
+                          <div className="p-3 bg-[#141414] border-t border-white/10 flex justify-between items-center">
+                            <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">Forensic Stream v1.0</span>
+                            <button 
+                              onClick={() => {
+                                const url = `${window.location.origin}/api/download/${job.id}?preview=true`;
+                                navigator.clipboard.writeText(url);
+                                alert("Stream URL copied to clipboard! Paste it into VLC (Media -> Open Network Stream).");
+                              }}
+                              className="text-[9px] font-mono text-emerald-500 hover:text-emerald-400 uppercase tracking-widest transition-colors flex items-center gap-2"
+                            >
+                              <ArrowLeftRight className="w-3 h-3" />
+                              Copy Stream URL (for VLC)
+                            </button>
+                            <a 
+                              href={`vlc://${window.location.origin}/api/download/${job.id}?preview=true`}
+                              className="text-[9px] font-mono text-white/40 hover:text-white transition-colors uppercase tracking-widest"
+                            >
+                              [ Open in VLC App ]
+                            </a>
+                          </div>
                         </motion.div>
                       )}
                     </div>
                   )}
 
                   {/* Forensic File Explorer */}
-                  <div className="mt-6">
-                    <button 
-                      onClick={() => setShowExplorer(!showExplorer)}
-                      className="text-[10px] font-mono text-white/40 uppercase tracking-[0.2em] hover:text-emerald-400 transition-colors flex items-center gap-2"
-                    >
-                      <Folder className="w-3 h-3" />
-                      {showExplorer ? "Hide Forensic File Explorer" : "Show Forensic File Explorer"}
-                    </button>
+                  <div className="mt-6 bg-black/20 rounded-xl p-4 border border-white/5">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-[0.2em] flex items-center gap-2">
+                        <Folder className="w-3 h-3" />
+                        Forensic Staging Area
+                      </h3>
+                      <button 
+                        onClick={() => setShowExplorer(!showExplorer)}
+                        className="text-[9px] font-mono text-emerald-500 uppercase tracking-widest hover:text-emerald-400 transition-colors"
+                      >
+                        {showExplorer ? "[ Hide Explorer ]" : "[ Expand Explorer ]"}
+                      </button>
+                    </div>
 
                     {showExplorer && jobFiles && (
                       <motion.div 
