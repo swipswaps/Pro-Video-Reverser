@@ -9,7 +9,8 @@ import {
   Video,
   ArrowLeftRight,
   ChevronRight,
-  Cpu
+  Cpu,
+  Folder
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -30,6 +31,8 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [systemHealth, setSystemHealth] = useState<{ load: number; psi: number; disk: { available: number; total: number }; zombies: number } | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [showExplorer, setShowExplorer] = useState(false);
+  const [jobFiles, setJobFiles] = useState<{ download: any[], chunks: any[], reversed: any[], final: any[] } | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -117,6 +120,22 @@ export default function App() {
       setIsSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    if (job && showExplorer) {
+      const fetchFiles = async () => {
+        try {
+          const res = await fetch(`/api/jobs/${job.id}/files`);
+          if (res.ok) setJobFiles(await res.json());
+        } catch (e) {
+          console.error("Explorer error", e);
+        }
+      };
+      fetchFiles();
+      const interval = setInterval(fetchFiles, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [job, showExplorer]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -327,12 +346,56 @@ export default function App() {
                           <video 
                             controls 
                             className="w-full aspect-video"
-                            src={`/api/download/${job.id}`}
+                            src={`/api/download/${job.id}?preview=true`}
                           />
                         </motion.div>
                       )}
                     </div>
                   )}
+
+                  {/* Forensic File Explorer */}
+                  <div className="mt-6">
+                    <button 
+                      onClick={() => setShowExplorer(!showExplorer)}
+                      className="text-[10px] font-mono text-white/40 uppercase tracking-[0.2em] hover:text-emerald-400 transition-colors flex items-center gap-2"
+                    >
+                      <Folder className="w-3 h-3" />
+                      {showExplorer ? "Hide Forensic File Explorer" : "Show Forensic File Explorer"}
+                    </button>
+
+                    {showExplorer && jobFiles && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4"
+                      >
+                        {[
+                          { title: "Download Source", files: jobFiles.download },
+                          { title: "Input Chunks", files: jobFiles.chunks },
+                          { title: "Reversed Chunks", files: jobFiles.reversed },
+                          { title: "Final Master", files: jobFiles.final }
+                        ].map((section, idx) => (
+                          <div key={idx} className="bg-black/40 border border-white/5 rounded-lg p-3">
+                            <h4 className="text-[9px] font-mono text-white/30 uppercase tracking-widest mb-2 border-b border-white/5 pb-1">
+                              {section.title}
+                            </h4>
+                            <div className="space-y-1 max-h-[120px] overflow-y-auto custom-scrollbar">
+                              {section.files.length === 0 ? (
+                                <p className="text-[9px] font-mono text-white/10 italic">No files detected</p>
+                              ) : (
+                                section.files.map((f, fidx) => (
+                                  <div key={fidx} className="flex justify-between items-center text-[9px] font-mono">
+                                    <span className="text-white/60 truncate max-w-[150px]">{f.name}</span>
+                                    <span className="text-white/20">{(f.size / 1024 / 1024).toFixed(2)}MB</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </motion.div>
+                    )}
+                  </div>
 
                   {job.status === "failed" && (
                     <div className="mt-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-lg flex items-start gap-3">

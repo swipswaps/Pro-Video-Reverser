@@ -240,11 +240,39 @@ async function startServer() {
   });
 
   app.get("/api/download/:id", (req, res) => {
-    const job = jobs[req.params.id];
+    let job = jobs[req.params.id];
+    if (!job) {
+      job = getJobFromDb(req.params.id);
+    }
     if (!job || job.status !== "completed" || !job.outputFile) {
       return res.status(404).json({ error: "File not found" });
     }
-    res.download(job.outputFile);
+    // For preview, we want to serve the file without forcing download if requested
+    if (req.query.preview) {
+      res.sendFile(job.outputFile);
+    } else {
+      res.download(job.outputFile);
+    }
+  });
+
+  app.get("/api/jobs/:id/files", (req, res) => {
+    const jobDir = path.join(JOBS_DIR, req.params.id);
+    if (!fs.existsSync(jobDir)) return res.status(404).json({ error: "Job dir not found" });
+
+    const scan = (dir: string) => {
+      if (!fs.existsSync(dir)) return [];
+      return fs.readdirSync(dir).map(f => {
+        const stats = fs.statSync(path.join(dir, f));
+        return { name: f, size: stats.size, mtime: stats.mtime };
+      });
+    };
+
+    res.json({
+      download: scan(path.join(jobDir, "download")),
+      chunks: scan(path.join(jobDir, "chunks")),
+      reversed: scan(path.join(jobDir, "reversed")),
+      final: scan(jobDir).filter(f => f.name.endsWith(".mp4") && !f.name.includes("part_"))
+    });
   });
 
   app.get("/api/download/:id/chunks/:chunkName", (req, res) => {
