@@ -130,6 +130,7 @@ class SystemMonitor {
 interface Job {
   id: string;
   url: string;
+  sourceFile?: string | null;  // absolute local path — if set, skip download
   status: "pending" | "downloading" | "splitting" | "reversing" | "merging" | "completed" | "failed";
   progress: number;
   logs: string[];
@@ -220,22 +221,27 @@ async function startServer() {
 
   // API Routes
   app.post("/api/jobs", async (req, res) => {
-    const { url } = req.body;
-    if (!url) {
-      return res.status(400).json({ error: "URL is required" });
+    const { url, sourceFile } = req.body;
+    // sourceFile: absolute path to a local file to reverse instead of downloading
+    // url: YouTube URL to download and reverse
+    // One of the two must be provided.
+    if (!url && !sourceFile) {
+      return res.status(400).json({ error: "Either url or sourceFile is required" });
+    }
+    if (sourceFile && !fs.existsSync(sourceFile)) {
+      return res.status(400).json({ error: `sourceFile not found: ${sourceFile}` });
     }
 
-    console.log(`SERVER: Received request to initialize job for ${url}`);
-    // Use a stable jobId based on URL hash for idempotency
-    const jobId = crypto.createHash("md5").update(url).digest("hex");
+    const jobKey = sourceFile || url;
+    console.log(`SERVER: Received request to initialize job for ${jobKey}`);
+    const jobId = crypto.createHash("md5").update(jobKey).digest("hex");
     
-    // Force fresh start if job already exists but user is re-initializing
+    // Force fresh start
     const jobDir = path.join(JOBS_DIR, jobId);
     if (fs.existsSync(jobDir)) {
       console.log(`SERVER: Wiping existing job directory for ${jobId}`);
       await fs.remove(jobDir);
     }
-    // Also clear from DB to ensure fresh runJob
     console.log(`SERVER: Clearing existing job record for ${jobId}`);
     db.prepare("DELETE FROM logs WHERE job_id = ?").run(jobId);
     db.prepare("DELETE FROM jobs WHERE id = ?").run(jobId);
@@ -243,10 +249,11 @@ async function startServer() {
 
     let job: Job = {
       id: jobId,
-      url,
+      url: url || sourceFile,
+      sourceFile: sourceFile || null,
       status: "pending",
       progress: 0,
-      logs: ["Job initialized"],
+      logs: [sourceFile ? `Reversing local file: ${sourceFile}` : "Job initialized"],
     };
 
     jobs[jobId] = job;
@@ -588,13 +595,22 @@ async function runJob(jobId: string) {
     
     log(jobId, `System Encoder Check: ${encoder} selected (libx264: ${hasLibx264}, libopenh264: ${hasOpenH264})`);
 
-    // 1. Download
+    // 1. Download (or use local sourceFile)
     const downloadPath = path.join(downloadDir, "input.mp4");
     const downloadExists = await fs.pathExists(downloadPath);
     const downloadSize = downloadExists ? (await fs.stat(downloadPath)).size : 0;
 
     if (downloadExists && downloadSize > 0) {
       log(jobId, "Existing download found, skipping download step.");
+      job.chunks.downloaded = true;
+    } else if (job.sourceFile) {
+      // Local file reversal — symlink or copy into the job's download dir.
+      // Copy (not symlink) so the pipeline is self-contained and the original is safe.
+      log(jobId, `Using local source file: ${job.sourceFile}`);
+      job.status = "downloading";
+      saveJob(job);
+      await fs.copy(job.sourceFile, downloadPath);
+      log(jobId, `Local file staged at ${downloadPath} (${((await fs.stat(downloadPath)).size / 1024 / 1024).toFixed(1)}MB)`);
       job.chunks.downloaded = true;
     } else {
       job.status = "downloading";
