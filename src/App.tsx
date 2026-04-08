@@ -526,11 +526,16 @@ export default function App() {
                       <div className="flex items-center gap-3 mt-1">
                         <p className="text-[10px] text-white/40 font-mono truncate max-w-[200px]">JOB_ID: {job.id}</p>
                         <button 
-                          onClick={deleteJob}
-                          className="px-2 py-0.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-[9px] font-mono text-rose-400 hover:text-rose-300 uppercase tracking-widest transition-all rounded flex items-center gap-1"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            console.log("Delete button clicked");
+                            deleteJob();
+                          }}
+                          className="relative z-50 px-3 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-bold uppercase tracking-tighter transition-all rounded shadow-lg flex items-center gap-1 active:scale-95"
                         >
                           <AlertCircle className="w-3 h-3" />
-                          Delete Job
+                          DELETE JOB
                         </button>
                       </div>
                     </div>

@@ -206,14 +206,11 @@ async function startServer() {
     if (fs.existsSync(jobDir)) {
       await fs.remove(jobDir);
     }
+    // Also clear from DB to ensure fresh runJob
+    db.prepare("DELETE FROM jobs WHERE id = ?").run(jobId);
+    delete jobs[jobId];
 
-    let job = getJobFromDb(jobId);
-    if (job && (job.status !== "failed")) {
-      jobs[jobId] = job; // Cache it
-      return res.json({ jobId });
-    }
-
-    job = {
+    let job: Job = {
       id: jobId,
       url,
       status: "pending",
@@ -251,12 +248,20 @@ async function startServer() {
 
   app.delete("/api/jobs/:id", async (req, res) => {
     const { id } = req.params;
+    console.log(`API: Deleting job ${id}`);
     const jobDir = path.join(JOBS_DIR, id);
-    if (fs.existsSync(jobDir)) {
-      await fs.remove(jobDir);
+    try {
+      if (fs.existsSync(jobDir)) {
+        await fs.remove(jobDir);
+      }
+      db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
+      delete jobs[id];
+      console.log(`API: Job ${id} deleted successfully`);
+      res.json({ success: true });
+    } catch (error) {
+      console.error(`API: Error deleting job ${id}:`, error);
+      res.status(500).json({ error: "Failed to delete job" });
     }
-    delete jobs[id];
-    res.json({ success: true });
   });
 
   app.get("/api/media", (req, res) => {
