@@ -29,6 +29,7 @@ export default function App() {
   const [job, setJob] = useState<Job | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [systemHealth, setSystemHealth] = useState<{ load: number; psi: number; disk: { available: number; total: number }; zombies: number } | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -282,12 +283,15 @@ export default function App() {
                           const chunkName = `part_${String(i).padStart(5, '0')}.mp4`;
                           const isCompleted = job.chunks?.completed.includes(chunkName);
                           return (
-                            <div 
+                            <a 
                               key={i}
-                              className={`w-3 h-3 rounded-sm transition-all duration-500 ${
-                                isCompleted ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)]' : 'bg-white/5'
+                              href={isCompleted ? `/api/download/${job.id}/chunks/${chunkName}` : undefined}
+                              target="_blank"
+                              rel="noreferrer"
+                              className={`w-3 h-3 rounded-sm transition-all duration-500 cursor-pointer ${
+                                isCompleted ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)] hover:scale-125' : 'bg-white/5 cursor-not-allowed'
                               }`}
-                              title={`Chunk ${i + 1}: ${isCompleted ? 'Reversed' : 'Pending'}`}
+                              title={isCompleted ? `Download Chunk ${i + 1}: ${chunkName}` : `Chunk ${i + 1}: Pending`}
                             />
                           );
                         })}
@@ -296,15 +300,38 @@ export default function App() {
                   )}
 
                   {job.status === "completed" && (
-                    <motion.a
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      href={`/api/download/${job.id}`}
-                      className="mt-8 w-full bg-white text-black font-bold py-4 rounded-lg transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs hover:bg-emerald-400"
-                    >
-                      <Download className="w-4 h-4" />
-                      Download Result
-                    </motion.a>
+                    <div className="mt-8 space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <button
+                          onClick={() => setShowPreview(!showPreview)}
+                          className="bg-white/5 hover:bg-white/10 text-white font-bold py-4 rounded-lg transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs border border-white/10"
+                        >
+                          <Video className="w-4 h-4" />
+                          {showPreview ? "Hide Preview" : "Preview Result"}
+                        </button>
+                        <a
+                          href={`/api/download/${job.id}`}
+                          className="bg-white text-black font-bold py-4 rounded-lg transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs hover:bg-emerald-400 shadow-[0_0_20px_rgba(255,255,255,0.1)]"
+                        >
+                          <Download className="w-4 h-4" />
+                          Download Final
+                        </a>
+                      </div>
+
+                      {showPreview && (
+                        <motion.div 
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          className="rounded-lg overflow-hidden border border-white/10 bg-black"
+                        >
+                          <video 
+                            controls 
+                            className="w-full aspect-video"
+                            src={`/api/download/${job.id}`}
+                          />
+                        </motion.div>
+                      )}
+                    </div>
                   )}
 
                   {job.status === "failed" && (

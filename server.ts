@@ -247,6 +247,16 @@ async function startServer() {
     res.download(job.outputFile);
   });
 
+  app.get("/api/download/:id/chunks/:chunkName", (req, res) => {
+    const { id, chunkName } = req.params;
+    const chunkPath = path.join(JOBS_DIR, id, "reversed", chunkName);
+    if (fs.existsSync(chunkPath)) {
+      res.download(chunkPath);
+    } else {
+      res.status(404).json({ error: "Chunk not found" });
+    }
+  });
+
   app.get("/api/system/health", async (req, res) => {
     const health = await SystemForensics.checkHealth();
     res.json(health);
