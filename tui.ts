@@ -60,7 +60,7 @@ const jobTable = grid.set(4, 0, 4, 9, contrib.table, {
 
 // 4. File Explorer
 const fileTree = grid.set(0, 9, 8, 3, contrib.tree, {
-  label: ' FORENSIC FILE EXPLORER ',
+  label: ' FILE EXPLORER ',
   style: { text: "white" },
   template: { lines: true },
   mouse: true
@@ -107,8 +107,46 @@ fileTree.on('select', (node: any) => {
     treeState[node.name] = node.extended;
     // Force immediate refresh of tree data to show expansion
     update();
+  } else {
+    // It's a file
+    logBox.log(`Selected File: ${node.name}`);
+    
+    const q = blessed.question({
+      parent: screen,
+      top: 'center',
+      left: 'center',
+      width: '60%',
+      height: 'shrink',
+      border: 'line',
+      label: ' PLAYBACK MISSION ',
+      style: { border: { fg: 'emerald' }, bg: 'black' },
+      content: `Play ${node.name}?\n\n[T] Terminal Mode\n[W] New Window (Web)\n[C] Cancel`,
+      keys: true,
+      vi: true
+    });
+
+    q.ask('', (err, value) => {
+      if (value) {
+        if (value.toLowerCase() === 't') {
+          logBox.log(`[TUI] Initializing terminal playback for ${node.name}...`);
+          // In this environment, we simulate terminal play by showing progress
+          let p = 0;
+          const iv = setInterval(() => {
+            p += 10;
+            logBox.log(`[PLAYBACK] ${node.name}: ${p}% rendered`);
+            if (p >= 100) {
+              clearInterval(iv);
+              logBox.log(`[PLAYBACK] Finished: ${node.name}`);
+            }
+            screen.render();
+          }, 500);
+        } else if (value.toLowerCase() === 'w') {
+          logBox.log(`[WEB] Open dashboard to preview ${node.name}`);
+        }
+      }
+      screen.render();
+    });
   }
-  logBox.log(`Selected: ${node.name}`);
   screen.render();
 });
 
@@ -206,8 +244,13 @@ function update() {
             treeData.children[d] = {
               name: d,
               extended: treeState[d] || false,
-              children: fs.readdirSync(dPath).slice(0, 10).map(f => ({name: f}))
+              children: {}
             };
+            
+            const files = fs.readdirSync(dPath);
+            files.forEach(f => {
+              (treeData.children[d] as any).children[f] = { name: f };
+            });
           }
         });
         fileTree.setData(treeData);

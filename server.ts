@@ -254,11 +254,14 @@ async function startServer() {
     // For preview, we want to serve the file without forcing download if requested
     if (req.query.preview) {
       console.log(`[PREVIEW] Serving job ${req.params.id} for preview: ${job.outputFile}`);
-      res.contentType("video/mp4");
-      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-      res.setHeader("Pragma", "no-cache");
-      res.setHeader("Expires", "0");
-      res.sendFile(job.outputFile);
+      // Let Express handle Content-Type and Accept-Ranges automatically
+      res.sendFile(job.outputFile, {
+        headers: {
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0"
+        }
+      });
     } else {
       res.download(job.outputFile);
     }
@@ -473,6 +476,7 @@ async function runJob(jobId: string) {
           "-tune", "fastdecode",
           "-crf", "23",
           "-threads", "1",
+          "-movflags", "+faststart",
           outputPath
         ], (msg) => {});
         job.chunks.completed.push(chunk);

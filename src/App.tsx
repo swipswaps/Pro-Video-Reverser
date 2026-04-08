@@ -407,15 +407,12 @@ export default function App() {
                         >
                           <video 
                             key={job.id}
+                            src={`/api/download/${job.id}?preview=true&t=${Date.now()}`}
                             controls 
                             playsInline
                             className="w-full aspect-video"
                             preload="auto"
                           >
-                            <source 
-                              src={`/api/download/${job.id}?preview=true&t=${Date.now()}`} 
-                              type="video/mp4; codecs='avc1.42E01E, mp4a.40.2'" 
-                            />
                             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-8 text-center">
                               <AlertCircle className="w-8 h-8 text-amber-500 mb-4" />
                               <p className="text-xs font-mono text-white/60">
