@@ -10,7 +10,8 @@ import {
   ArrowLeftRight,
   ChevronRight,
   Cpu,
-  Folder
+  Folder,
+  Trash2
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -246,7 +247,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight uppercase italic font-serif">Pro Video Reverser</h1>
-            <p className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-mono">Mission Control // Stable Pipeline v1.0</p>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-mono">Job Pipeline // System v1.1</p>
           </div>
         </div>
         <div className="hidden md:flex items-center gap-6 font-mono text-[10px] uppercase tracking-widest text-white/60">
@@ -281,7 +282,7 @@ export default function App() {
         <div className="bg-emerald-500/10 border-y border-emerald-500/20 px-6 py-2 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
-            <span className="text-[10px] font-mono text-emerald-400 uppercase tracking-widest">Update Available: New forensic features staged on GitHub</span>
+            <span className="text-[10px] font-mono text-emerald-400 uppercase tracking-widest">Update Available: New pipeline features staged on GitHub</span>
           </div>
           <div className="flex items-center gap-4">
             <p className="text-[9px] font-mono text-white/40 uppercase tracking-widest">Apply via terminal or button:</p>
@@ -302,7 +303,7 @@ export default function App() {
           <div className="bg-[#141414] border border-white/10 rounded-xl p-6 shadow-2xl relative overflow-hidden group">
             <h2 className="text-sm font-mono uppercase tracking-widest text-emerald-400 mb-6 flex items-center gap-2">
               <ChevronRight className="w-4 h-4" />
-              Mission Control
+              Job Pipeline
             </h2>
 
             <form onSubmit={startJob} className="space-y-4 relative z-10">
@@ -346,7 +347,7 @@ export default function App() {
             <div className="p-3 border-b border-white/5 flex items-center justify-between bg-black/20">
               <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-widest flex items-center gap-2">
                 <Video className="w-3 h-3" />
-                Forensic Player
+                Video Player
               </h3>
               {selectedFilePath && (
                 <span className="text-[9px] font-mono text-emerald-500/60 truncate max-w-[200px]">
@@ -377,12 +378,12 @@ export default function App() {
                     <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/95 p-8 text-center z-10">
                       <AlertCircle className="w-8 h-8 text-rose-500 mb-4" />
                       <p className="text-xs font-mono text-white/60">
-                        Playback Failed: Codec Mismatch
+                        Playback Failed: Incompatible Format
                       </p>
                       <p className="text-[10px] font-mono text-white/40 mt-2 leading-relaxed">
-                        The browser cannot decode this forensic asset.<br/>
-                        This usually happens with stale MPEG-4 files.<br/>
-                        <span className="text-rose-400 font-bold">Action: Click "DELETE JOB" and re-run.</span>
+                        The browser cannot decode this video asset.<br/>
+                        This usually happens with interrupted processing.<br/>
+                        <span className="text-rose-400 font-bold">Action: Click "Delete Job & Reset" and re-run.</span>
                       </p>
                     </div>
                   )}
@@ -558,10 +559,10 @@ export default function App() {
                               deleteJob();
                             }}
                             disabled={isDeleting}
-                            className={`relative z-50 px-3 py-1 ${isDeleting ? 'bg-red-900' : 'bg-red-600 hover:bg-red-500'} text-white text-[10px] font-bold uppercase tracking-tighter transition-all rounded shadow-lg flex items-center gap-1 active:scale-95 disabled:opacity-50`}
+                            className={`relative z-50 px-3 py-1.5 ${isDeleting ? 'bg-red-900/50 text-red-400' : 'bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500 hover:text-white'} text-[10px] font-bold uppercase tracking-widest transition-all rounded-lg shadow-lg flex items-center gap-2 active:scale-95 disabled:opacity-50`}
                           >
-                            {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlertCircle className="w-3 h-3" />}
-                            {isDeleting ? "DELETING..." : "DELETE JOB"}
+                            {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                            {isDeleting ? "Wiping Data..." : "Delete Job & Reset"}
                           </button>
                         </div>
                         {deleteError && (
@@ -587,7 +588,7 @@ export default function App() {
                   {job.chunks && job.chunks.total > 0 && (
                     <div className="mt-6 space-y-3">
                       <div className="flex justify-between text-[9px] font-mono text-white/40 uppercase tracking-widest">
-                        <span>Forensic Chunk Map</span>
+                        <span>Processing Chunk Map</span>
                         <span>{job.chunks.completed.length} / {job.chunks.total} Verified</span>
                       </div>
                       <div className="flex flex-wrap gap-1.5">

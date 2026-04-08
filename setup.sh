@@ -46,10 +46,10 @@ fi
 echo "[SETUP] Verifying Node.js dependencies..."
 npm install --no-audit --no-fund
 
-# ─── Step 3: Verify system forensic tools ────────────────────────────────────
+# ─── Step 3: Verify system monitoring tools ────────────────────────────────────
 if [ -f "forensic_latency_probe_v13.py" ]; then
-    echo "[SETUP] Verifying system forensic tools..."
-    python3 forensic_latency_probe_v13.py --module DEPS || echo "[WARNING] Forensic tools verification failed."
+    echo "[SETUP] Verifying system monitoring tools..."
+    python3 forensic_latency_probe_v13.py --module DEPS || echo "[WARNING] System tools verification failed."
 fi
 
 # ─── Step 4: Start server ─────────────────────────────────────────────────────

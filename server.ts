@@ -47,7 +47,7 @@ db.exec(`
   );
 `);
 
-class SystemForensics {
+class SystemMonitor {
   static async getLoadAvg(): Promise<number> {
     try {
       const uptime = await runCommandCapture("uptime");
@@ -146,7 +146,7 @@ function getJobFromDb(id: string): Job | null {
     logs: logRows.map(r => r.message)
   };
 
-  // Forensic Discovery: Reconstruct chunk state from filesystem
+  // System Discovery: Reconstruct chunk state from filesystem
   const jobDir = path.join(JOBS_DIR, id);
   const downloadDir = path.join(jobDir, "download");
   const chunksDir = path.join(jobDir, "chunks");
@@ -292,29 +292,36 @@ async function startServer() {
   app.get("/api/media", (req, res) => {
     const filePath = req.query.path as string;
     if (!filePath || !fs.existsSync(filePath)) {
+      console.error(`SERVER: Media not found: ${filePath}`);
       return res.status(404).json({ error: "File not found" });
     }
 
-    // Ensure we are serving a video file
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'no-cache');
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
 
-    res.sendFile(filePath, {
-      maxAge: 0,
-      lastModified: false,
-      headers: {
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = (end - start) + 1;
+      const file = fs.createReadStream(filePath, { start, end });
+      const head = {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
         'Content-Type': 'video/mp4',
-        'Accept-Ranges': 'bytes'
-      }
-    }, (err) => {
-      if (err) {
-        console.error("Error sending file:", err);
-        if (!res.headersSent) {
-          res.status(500).end();
-        }
-      }
-    });
+      };
+      res.writeHead(206, head);
+      file.pipe(res);
+    } else {
+      const head = {
+        'Content-Length': fileSize,
+        'Content-Type': 'video/mp4',
+      };
+      res.writeHead(200, head);
+      fs.createReadStream(filePath).pipe(res);
+    }
   });
 
   app.get("/api/download/:id", (req, res) => {
@@ -374,7 +381,7 @@ async function startServer() {
 
   app.get("/api/system/health", async (req, res) => {
     try {
-      const health = await SystemForensics.checkHealth();
+      const health = await SystemMonitor.checkHealth();
       res.json(health);
     } catch (error) {
       console.error("SERVER: Health check failed:", error);
@@ -453,7 +460,7 @@ async function runJob(jobId: string) {
     job.chunks = { total: 0, completed: [], downloaded: false };
 
     // Disk Space Guard
-    const healthCheck = await SystemForensics.checkHealth();
+    const healthCheck = await SystemMonitor.checkHealth();
     if (healthCheck.disk.available < 500) {
       throw new Error(`Insufficient disk space: ${healthCheck.disk.available}MB available. Need at least 500MB.`);
     }
@@ -469,7 +476,7 @@ async function runJob(jobId: string) {
     const hasOpenH264 = encoders.includes("libopenh264");
     const encoder = hasLibx264 ? "libx264" : (hasOpenH264 ? "libopenh264" : "mpeg4");
     
-    log(jobId, `Forensic Encoder Check: ${encoder} selected (libx264: ${hasLibx264}, libopenh264: ${hasOpenH264})`);
+    log(jobId, `System Encoder Check: ${encoder} selected (libx264: ${hasLibx264}, libopenh264: ${hasOpenH264})`);
 
     // 1. Download
     const downloadPath = path.join(downloadDir, "input.mp4");
@@ -484,17 +491,25 @@ async function runJob(jobId: string) {
       saveJob(job);
       log(jobId, `Starting download from ${job.url}`);
       
-      await youtubedl(job.url, {
-        format: "bestvideo+bestaudio/best",
-        mergeOutputFormat: "mp4",
-        output: downloadPath,
-        noCheckCertificates: true,
-        noWarnings: true,
-        addHeader: [
-          'referer:youtube.com',
-          'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        ]
-      });
+      try {
+        await youtubedl(job.url, {
+          format: "mp4[height<=720]/best[ext=mp4]/best",
+          output: downloadPath,
+          noCheckCertificates: true,
+          noWarnings: true,
+          addHeader: [
+            'referer:youtube.com',
+            'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+          ]
+        });
+      } catch (dlError: any) {
+        log(jobId, `Download failed: ${dlError.message}. Retrying with generic best...`);
+        await youtubedl(job.url, {
+          format: "best",
+          output: downloadPath,
+          noCheckCertificates: true,
+        });
+      }
       log(jobId, "Download complete");
       job.chunks.downloaded = true;
     }
@@ -509,14 +524,19 @@ async function runJob(jobId: string) {
     } else {
       job.status = "splitting";
       saveJob(job);
-      log(jobId, "Splitting video into 60s chunks...");
+      log(jobId, "Splitting video into 60s chunks (re-encoding for stability)...");
       
+      // Re-encoding during split ensures keyframes are at the start of each segment
       await runCommand("ffmpeg", [
         "-y", "-i", downloadPath,
-        "-c", "copy",
-        "-map", "0",
-        "-segment_time", "60",
+        "-c:v", encoder,
+        "-c:a", "aac",
+        ...(encoder === "libx264" ? ["-profile:v", "baseline", "-level", "3.0"] : []),
+        "-pix_fmt", "yuv420p",
+        "-force_key_frames", "expr:gte(t,n_forced*60)",
         "-f", "segment",
+        "-segment_time", "60",
+        "-reset_timestamps", "1",
         path.join(chunksDir, "part_%05d.mp4")
       ], (msg) => log(jobId, msg));
 
