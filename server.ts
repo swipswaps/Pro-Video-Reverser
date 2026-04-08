@@ -72,12 +72,17 @@ class SystemForensics {
   static async getDiskSpace(): Promise<{ available: number; total: number }> {
     try {
       const df = await runCommandCapture("df -m . | tail -1");
-      const parts = df.split(/\s+/);
-      return {
-        total: parseInt(parts[1]),
-        available: parseInt(parts[3])
-      };
-    } catch {
+      const parts = df.split(/\s+/).filter(Boolean);
+      // parts[0] is filesystem, parts[1] is total, parts[2] is used, parts[3] is available
+      if (parts.length >= 4) {
+        return {
+          total: parseInt(parts[1]) || 0,
+          available: parseInt(parts[3]) || 0
+        };
+      }
+      return { available: 0, total: 0 };
+    } catch (e) {
+      console.error("Disk space check error:", e);
       return { available: 0, total: 0 };
     }
   }
@@ -210,6 +215,7 @@ async function startServer() {
     }
     // Also clear from DB to ensure fresh runJob
     console.log(`SERVER: Clearing existing job record for ${jobId}`);
+    db.prepare("DELETE FROM logs WHERE job_id = ?").run(jobId);
     db.prepare("DELETE FROM jobs WHERE id = ?").run(jobId);
     delete jobs[jobId];
 
@@ -255,18 +261,31 @@ async function startServer() {
     console.log(`SERVER: Deleting job ${id}`);
     const jobDir = path.join(JOBS_DIR, id);
     try {
+      // 1. Delete logs first to satisfy potential (though unlikely) FK constraints
+      console.log(`SERVER: Deleting logs for job ${id}`);
+      db.prepare("DELETE FROM logs WHERE job_id = ?").run(id);
+      
+      // 2. Delete job from database
+      console.log(`SERVER: Deleting job ${id} from database`);
+      db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
+      
+      // 3. Remove files from disk
       if (fs.existsSync(jobDir)) {
         console.log(`SERVER: Removing directory ${jobDir}`);
         await fs.remove(jobDir);
       }
-      console.log(`SERVER: Deleting job ${id} from database`);
-      db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
+      
+      // 4. Clear in-memory cache
       delete jobs[id];
+      
       console.log(`SERVER: Job ${id} deleted successfully`);
       res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
       console.error(`SERVER: Error deleting job ${id}:`, error);
-      res.status(500).json({ error: `Failed to delete job: ${error instanceof Error ? error.message : String(error)}` });
+      res.status(500).json({ 
+        error: error.message || String(error),
+        stack: error.stack
+      });
     }
   });
 
@@ -354,8 +373,16 @@ async function startServer() {
   });
 
   app.get("/api/system/health", async (req, res) => {
-    const health = await SystemForensics.checkHealth();
-    res.json(health);
+    try {
+      const health = await SystemForensics.checkHealth();
+      res.json(health);
+    } catch (error) {
+      console.error("SERVER: Health check failed:", error);
+      res.status(500).json({ 
+        error: "Health check failed", 
+        details: error instanceof Error ? error.message : String(error) 
+      });
+    }
   });
 
   app.get("/api/system/update-check", async (req, res) => {

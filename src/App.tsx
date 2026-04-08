@@ -105,9 +105,12 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           setSystemHealth(data);
+        } else {
+          const text = await res.text();
+          console.error(`Health fetch failed with status ${res.status}:`, text);
         }
       } catch (e) {
-        console.error("Health fetch error", e);
+        console.error("Health fetch error:", e);
       }
     };
     fetchHealth();
@@ -203,9 +206,18 @@ export default function App() {
         setJobFiles(null);
         setPlaybackError(false);
       } else {
-        const errText = await res.text();
-        console.error("CLIENT: Failed to delete job:", errText);
-        setDeleteError(`Delete failed: ${errText}`);
+        let errMessage = `Status ${res.status}`;
+        try {
+          const errData = await res.json();
+          errMessage = errData.error || JSON.stringify(errData);
+        } catch (e) {
+          try {
+            const text = await res.text();
+            if (text) errMessage = text;
+          } catch (e2) {}
+        }
+        console.error("CLIENT: Failed to delete job:", errMessage);
+        setDeleteError(`Delete failed: ${errMessage}`);
       }
     } catch (e: any) {
       console.error("CLIENT: Delete error", e);
