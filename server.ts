@@ -14,9 +14,40 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
 const JOBS_DIR = path.join(process.cwd(), "jobs");
+const LOG_DIR = path.join(process.cwd(), "forensic_logs");
 
-// Ensure jobs directory exists
+// Ensure directories exist
 fs.ensureDirSync(JOBS_DIR);
+fs.ensureDirSync(LOG_DIR);
+
+class SystemForensics {
+  static async getLoadAvg(): Promise<number> {
+    try {
+      const uptime = await runCommandCapture("uptime");
+      const match = uptime.match(/load average:\s+([\d.]+)/);
+      return match ? parseFloat(match[1]) : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  static async getPSICPU(): Promise<number> {
+    try {
+      if (await fs.pathExists("/proc/pressure/cpu")) {
+        const content = await fs.readFile("/proc/pressure/cpu", "utf8");
+        const match = content.match(/some avg10=([\d.]+)/);
+        return match ? parseFloat(match[1]) : 0;
+      }
+    } catch {}
+    return 0;
+  }
+
+  static async checkHealth() {
+    const load = await this.getLoadAvg();
+    const psi = await this.getPSICPU();
+    return { load, psi, timestamp: new Date().toISOString() };
+  }
+}
 
 interface Job {
   id: string;
@@ -77,6 +108,11 @@ async function startServer() {
       return res.status(404).json({ error: "File not found" });
     }
     res.download(job.outputFile);
+  });
+
+  app.get("/api/system/health", async (req, res) => {
+    const health = await SystemForensics.checkHealth();
+    res.json(health);
   });
 
   // Vite middleware for development
@@ -185,6 +221,14 @@ async function runJob(jobId: string) {
       if (await fs.pathExists(outputPath) && (await fs.stat(outputPath)).size > 0) {
         log(jobId, `Chunk ${i + 1}/${totalChunks} already reversed, skipping.`);
       } else {
+        // Forensic Throttling
+        let health = await SystemForensics.checkHealth();
+        while (health.load > 4.0 || health.psi > 20.0) {
+          log(jobId, `System load high (Load: ${health.load}, PSI: ${health.psi}%). Throttling...`);
+          await new Promise(r => setTimeout(r, 5000));
+          health = await SystemForensics.checkHealth();
+        }
+
         log(jobId, `Reversing chunk ${i + 1}/${totalChunks}: ${chunk}`);
         
         await runCommand("ffmpeg", [
@@ -252,6 +296,18 @@ function runCommand(command: string, args: string[], onLog: (msg: string) => voi
     
     proc.on("close", (code) => {
       if (code === 0) resolve();
+      else reject(new Error(`${command} exited with code ${code}`));
+    });
+  });
+}
+
+function runCommandCapture(command: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, [], { shell: true });
+    let output = "";
+    proc.stdout.on("data", (data) => output += data.toString());
+    proc.on("close", (code) => {
+      if (code === 0) resolve(output.trim());
       else reject(new Error(`${command} exited with code ${code}`));
     });
   });

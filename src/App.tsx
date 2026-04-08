@@ -28,7 +28,25 @@ export default function App() {
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [systemHealth, setSystemHealth] = useState<{ load: number; psi: number } | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch("/api/system/health");
+        if (res.ok) {
+          const data = await res.json();
+          setSystemHealth(data);
+        }
+      } catch (e) {
+        console.error("Health fetch error", e);
+      }
+    };
+    fetchHealth();
+    const interval = setInterval(fetchHealth, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -105,8 +123,12 @@ export default function App() {
         </div>
         <div className="hidden md:flex items-center gap-6 font-mono text-[10px] uppercase tracking-widest text-white/60">
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            System Ready
+            <div className={`w-2 h-2 rounded-full ${systemHealth && systemHealth.load < 4 ? 'bg-emerald-500' : 'bg-amber-500'} animate-pulse`} />
+            LOAD: {systemHealth?.load.toFixed(2) || "0.00"}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${systemHealth && systemHealth.psi < 10 ? 'bg-emerald-500' : 'bg-rose-500'} animate-pulse`} />
+            PSI: {systemHealth?.psi.toFixed(1) || "0.0"}%
           </div>
           <div className="flex items-center gap-2">
             <Cpu className="w-3 h-3" />
