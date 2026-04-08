@@ -35,6 +35,7 @@ export default function App() {
   const [hasUpdate, setHasUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [jobFiles, setJobFiles] = useState<{ download: any[], chunks: any[], reversed: any[], final: any[] } | null>(null);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
     download: true,
     chunks: false,
@@ -161,7 +162,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (job && showExplorer) {
+    if (job) {
       const fetchFiles = async () => {
         try {
           const res = await fetch(`/api/jobs/${job.id}/files`);
@@ -174,7 +175,7 @@ export default function App() {
       const interval = setInterval(fetchFiles, 5000);
       return () => clearInterval(interval);
     }
-  }, [job, showExplorer]);
+  }, [job?.id]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -245,20 +246,16 @@ export default function App() {
         </div>
       )}
 
-      <main className="max-w-6xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Input Section */}
-        <section className="lg:col-span-5 space-y-8">
-              <div className="bg-[#141414] border border-white/10 rounded-xl p-8 shadow-2xl relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-              <Video className="w-24 h-24" />
-            </div>
-            
+      <main className="max-w-7xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Left Column: Input, Player, Explorer */}
+        <section className="lg:col-span-5 space-y-6">
+          <div className="bg-[#141414] border border-white/10 rounded-xl p-6 shadow-2xl relative overflow-hidden group">
             <h2 className="text-sm font-mono uppercase tracking-widest text-emerald-400 mb-6 flex items-center gap-2">
               <ChevronRight className="w-4 h-4" />
-              New Processing Job
+              Mission Control
             </h2>
 
-            <form onSubmit={startJob} className="space-y-6 relative z-10">
+            <form onSubmit={startJob} className="space-y-4 relative z-10">
               <div className="space-y-2">
                 <label className="text-[10px] uppercase tracking-widest text-white/40 font-mono ml-1">YouTube Source URL</label>
                 <input
@@ -271,28 +268,171 @@ export default function App() {
                 />
               </div>
 
-              <button
-                type="submit"
-                disabled={isSubmitting || !url || (job !== null && job.status !== "completed" && job.status !== "failed")}
-                className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-white/5 disabled:text-white/20 text-black font-bold py-4 rounded-lg transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs shadow-[0_0_30px_rgba(16,185,129,0.2)]"
-              >
-                {isSubmitting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Play className="w-4 h-4 fill-current" />
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={isSubmitting || !url || (job !== null && job.status !== "completed" && job.status !== "failed")}
+                  className="flex-1 bg-emerald-500 hover:bg-emerald-400 disabled:bg-white/5 disabled:text-white/20 text-black font-bold py-3 rounded-lg transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-[10px] shadow-[0_0_30px_rgba(16,185,129,0.2)]"
+                >
+                  {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+                  Initialize Pipeline
+                </button>
+                {url && (url.startsWith('http') || url.startsWith('https')) && !url.includes('youtube.com') && !url.includes('youtu.be') && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFilePath(url)}
+                    className="bg-white/5 hover:bg-white/10 text-white font-bold px-4 py-3 rounded-lg transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-[10px] border border-white/10"
+                  >
+                    <Video className="w-4 h-4" />
+                    Direct Play
+                  </button>
                 )}
-                Initialize Pipeline
-              </button>
+              </div>
             </form>
           </div>
 
-          {/* System Stats / Recipe 3 feel */}
+          {/* Integrated Player */}
+          <div className="bg-[#141414] border border-white/10 rounded-xl overflow-hidden shadow-2xl">
+            <div className="p-3 border-b border-white/5 flex items-center justify-between bg-black/20">
+              <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-widest flex items-center gap-2">
+                <Video className="w-3 h-3" />
+                Forensic Player
+              </h3>
+              {selectedFilePath && (
+                <span className="text-[9px] font-mono text-emerald-500/60 truncate max-w-[200px]">
+                  {selectedFilePath.split('/').pop()}
+                </span>
+              )}
+            </div>
+            
+            <div className="aspect-video bg-black relative group">
+              {selectedFilePath || (job?.outputFile && job.status === "completed") ? (
+                <video 
+                  key={selectedFilePath || job?.outputFile}
+                  src={selectedFilePath ? `/api/media?path=${encodeURIComponent(selectedFilePath)}&t=${Date.now()}` : `/api/media?path=${encodeURIComponent(job?.outputFile || '')}&t=${Date.now()}`}
+                  controls 
+                  playsInline
+                  autoPlay
+                  className="w-full h-full"
+                  preload="auto"
+                />
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-white/10">
+                  <Play className="w-12 h-12 mb-4 opacity-10" />
+                  <p className="text-[10px] font-mono uppercase tracking-widest">No Media Selected</p>
+                </div>
+              )}
+            </div>
+            
+            <div className="p-3 bg-black/40 flex justify-between items-center border-t border-white/5">
+              <button 
+                onClick={() => {
+                  const path = selectedFilePath || job?.outputFile;
+                  if (path) {
+                    const url = `${window.location.origin}/api/media?path=${encodeURIComponent(path)}`;
+                    navigator.clipboard.writeText(url);
+                    alert("Media URL copied!");
+                  }
+                }}
+                className="text-[9px] font-mono text-white/40 hover:text-emerald-500 transition-colors uppercase tracking-widest"
+              >
+                [ Copy URL ]
+              </button>
+              <button 
+                onClick={() => setSelectedFilePath(null)}
+                className="text-[9px] font-mono text-white/20 hover:text-rose-500 transition-colors uppercase tracking-widest"
+              >
+                [ Reset ]
+              </button>
+            </div>
+          </div>
+
+          {/* File Explorer */}
+          <div className="bg-[#141414] border border-white/10 rounded-xl p-4 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-[0.2em] flex items-center gap-2">
+                <Folder className="w-3 h-3" />
+                File Explorer
+              </h3>
+              <button 
+                onClick={async () => {
+                  if (!job) return;
+                  try {
+                    const res = await fetch(`/api/jobs/${job.id}/files`);
+                    if (res.ok) setJobFiles(await res.json());
+                  } catch (e) {}
+                }}
+                className="text-[9px] font-mono text-white/20 hover:text-emerald-500 transition-colors uppercase tracking-widest"
+              >
+                [ Refresh ]
+              </button>
+            </div>
+
+            <div className="space-y-2 max-h-[400px] overflow-y-auto custom-scrollbar pr-2">
+              {jobFiles ? (
+                [
+                  { id: "download", title: "Source", files: jobFiles.download },
+                  { id: "chunks", title: "Chunks", files: jobFiles.chunks },
+                  { id: "reversed", title: "Reversed", files: jobFiles.reversed },
+                  { id: "final", title: "Master", files: jobFiles.final }
+                ].map((section) => (
+                  <div key={section.id} className="bg-black/40 border border-white/5 rounded-lg overflow-hidden">
+                    <button 
+                      onClick={() => setExpandedFolders(prev => ({ ...prev, [section.id]: !prev[section.id] }))}
+                      className="w-full flex items-center justify-between p-2.5 hover:bg-white/5 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
+                        <ChevronRight className={`w-3 h-3 text-emerald-500 transition-transform ${expandedFolders[section.id] ? 'rotate-90' : ''}`} />
+                        <span className="text-[10px] font-mono text-white/60 uppercase tracking-widest">{section.title}</span>
+                      </div>
+                      <span className="text-[9px] font-mono text-white/20">{section.files.length}</span>
+                    </button>
+                    
+                    <AnimatePresence>
+                      {expandedFolders[section.id] && (
+                        <motion.div 
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="p-2 pt-0 space-y-1 border-t border-white/5">
+                            {section.files.map((f, fidx) => (
+                              <div key={fidx} className="flex justify-between items-center group/file py-1.5 hover:bg-white/5 pl-5 rounded transition-colors">
+                                <button 
+                                  onClick={() => setSelectedFilePath(f.path)}
+                                  className={`text-[9px] font-mono truncate max-w-[180px] text-left ${selectedFilePath === f.path ? 'text-emerald-400' : 'text-white/60 hover:text-white'}`}
+                                >
+                                  {f.name}
+                                </button>
+                                <div className="flex items-center gap-3">
+                                  <span className="text-[8px] font-mono text-white/20">{(f.size / 1024 / 1024).toFixed(1)}MB</span>
+                                  <a 
+                                    href={`/api/media?path=${encodeURIComponent(f.path)}`}
+                                    download={f.name}
+                                    className="opacity-0 group-hover/file:opacity-100 transition-opacity"
+                                  >
+                                    <Download className="w-3 h-3 text-white/40 hover:text-emerald-500" />
+                                  </a>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                ))
+              ) : (
+                <p className="text-[10px] font-mono text-white/10 italic text-center py-8">No job data available</p>
+              )}
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             {[
               { label: "Chunk Size", value: "60s", icon: ArrowLeftRight },
               { label: "Threads", value: "1", icon: Cpu },
-              { label: "Format", value: "MP4/H.264", icon: Video },
-              { label: "Engine", value: "FFmpeg v4.4", icon: TerminalIcon },
             ].map((stat, i) => (
               <div key={i} className="bg-[#141414] border border-white/5 rounded-lg p-4 flex items-center gap-4">
                 <div className="p-2 bg-white/5 rounded">
@@ -307,7 +447,7 @@ export default function App() {
           </div>
         </section>
 
-        {/* Status Section */}
+        {/* Right Column: Status & Logs */}
         <section className="lg:col-span-7 space-y-6">
           <AnimatePresence mode="wait">
             {!job ? (
@@ -326,7 +466,7 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 className="space-y-6"
               >
-                {/* Progress Card */}
+                  {/* Progress Card */}
                 <div className="bg-[#141414] border border-white/10 rounded-xl p-6 shadow-2xl">
                   <div className="flex items-center justify-between mb-6">
                     <div>
@@ -364,190 +504,18 @@ export default function App() {
                           const chunkName = `part_${String(i).padStart(5, '0')}.mp4`;
                           const isCompleted = job.chunks?.completed.includes(chunkName);
                           return (
-                            <a 
+                            <div 
                               key={i}
-                              href={isCompleted ? `/api/download/${job.id}/chunks/${chunkName}` : undefined}
-                              target="_blank"
-                              rel="noreferrer"
-                              className={`w-3 h-3 rounded-sm transition-all duration-500 cursor-pointer ${
-                                isCompleted ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)] hover:scale-125' : 'bg-white/5 cursor-not-allowed'
+                              className={`w-3 h-3 rounded-sm transition-all duration-500 ${
+                                isCompleted ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)]' : 'bg-white/5'
                               }`}
-                              title={isCompleted ? `Download Chunk ${i + 1}: ${chunkName}` : `Chunk ${i + 1}: Pending`}
+                              title={isCompleted ? `Chunk ${i + 1}: Completed` : `Chunk ${i + 1}: Pending`}
                             />
                           );
                         })}
                       </div>
                     </div>
                   )}
-
-                  {job.status === "completed" && (
-                    <div className="mt-8 space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <button
-                          onClick={() => setShowPreview(!showPreview)}
-                          className="bg-white/5 hover:bg-white/10 text-white font-bold py-4 rounded-lg transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs border border-white/10"
-                        >
-                          <Video className="w-4 h-4" />
-                          {showPreview ? "Hide Preview" : "Preview Result"}
-                        </button>
-                        <a
-                          href={`/api/download/${job.id}`}
-                          className="bg-white text-black font-bold py-4 rounded-lg transition-all flex items-center justify-center gap-3 uppercase tracking-widest text-xs hover:bg-emerald-400 shadow-[0_0_20px_rgba(255,255,255,0.1)]"
-                        >
-                          <Download className="w-4 h-4" />
-                          Download Final
-                        </a>
-                      </div>
-
-                      {showPreview && (
-                        <motion.div 
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: "auto" }}
-                          className="rounded-lg overflow-hidden border border-white/10 bg-black relative"
-                        >
-                          <video 
-                            key={job.id}
-                            src={`/api/download/${job.id}?preview=true&t=${Date.now()}`}
-                            controls 
-                            playsInline
-                            className="w-full aspect-video"
-                            preload="auto"
-                          >
-                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-8 text-center">
-                              <AlertCircle className="w-8 h-8 text-amber-500 mb-4" />
-                              <p className="text-xs font-mono text-white/60">
-                                Browser codec mismatch or playback error.
-                              </p>
-                              <p className="text-[10px] font-mono text-white/40 mt-2">
-                                Use the "Copy Stream URL" button below to play in VLC.
-                              </p>
-                            </div>
-                          </video>
-                          
-                          <div className="p-3 bg-[#141414] border-t border-white/10 flex justify-between items-center">
-                            <span className="text-[9px] font-mono text-white/30 uppercase tracking-widest">Forensic Stream v1.0</span>
-                            <button 
-                              onClick={() => {
-                                const url = `${window.location.origin}/api/download/${job.id}?preview=true`;
-                                navigator.clipboard.writeText(url);
-                                alert("Stream URL copied to clipboard! Paste it into VLC (Media -> Open Network Stream).");
-                              }}
-                              className="text-[9px] font-mono text-emerald-500 hover:text-emerald-400 uppercase tracking-widest transition-colors flex items-center gap-2"
-                            >
-                              <ArrowLeftRight className="w-3 h-3" />
-                              Copy Stream URL (for VLC)
-                            </button>
-                            <a 
-                              href={`vlc://${window.location.origin}/api/download/${job.id}?preview=true`}
-                              className="text-[9px] font-mono text-white/40 hover:text-white transition-colors uppercase tracking-widest"
-                            >
-                              [ Open in VLC App ]
-                            </a>
-                          </div>
-                        </motion.div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Forensic File Explorer */}
-                  <div className="mt-6 bg-black/20 rounded-xl p-4 border border-white/5">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-4">
-                        <h3 className="text-[10px] font-mono text-white/40 uppercase tracking-[0.2em] flex items-center gap-2">
-                          <Folder className="w-3 h-3" />
-                          Forensic Staging Area
-                        </h3>
-                        <button 
-                          onClick={() => {
-                            // Trigger a refresh of job files
-                            const fetchFiles = async () => {
-                              if (!job) return;
-                              try {
-                                const res = await fetch(`/api/jobs/${job.id}/files`);
-                                if (res.ok) {
-                                  const data = await res.json();
-                                  setJobFiles(data);
-                                }
-                              } catch (e) {}
-                            };
-                            fetchFiles();
-                          }}
-                          className="text-[9px] font-mono text-white/20 hover:text-emerald-500 transition-colors uppercase tracking-widest"
-                        >
-                          [ Refresh ]
-                        </button>
-                      </div>
-                      <button 
-                        onClick={() => setShowExplorer(!showExplorer)}
-                        className="text-[9px] font-mono text-emerald-500 uppercase tracking-widest hover:text-emerald-400 transition-colors"
-                      >
-                        {showExplorer ? "[ Hide Explorer ]" : "[ Expand Explorer ]"}
-                      </button>
-                    </div>
-
-                    {showExplorer && jobFiles && (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="mt-4 space-y-2"
-                      >
-                        {[
-                          { id: "download", title: "Download Source", files: jobFiles.download },
-                          { id: "chunks", title: "Input Chunks", files: jobFiles.chunks },
-                          { id: "reversed", title: "Reversed Chunks", files: jobFiles.reversed },
-                          { id: "final", title: "Final Master", files: jobFiles.final }
-                        ].map((section) => (
-                          <div key={section.id} className="bg-black/40 border border-white/5 rounded-lg overflow-hidden">
-                            <button 
-                              onClick={() => setExpandedFolders(prev => ({ ...prev, [section.id]: !prev[section.id] }))}
-                              className="w-full flex items-center justify-between p-3 hover:bg-white/5 transition-colors"
-                            >
-                              <div className="flex items-center gap-2">
-                                <ChevronRight className={`w-3 h-3 text-emerald-500 transition-transform ${expandedFolders[section.id] ? 'rotate-90' : ''}`} />
-                                <h4 className="text-[10px] font-mono text-white/60 uppercase tracking-widest">
-                                  {section.title}
-                                  <span className="ml-2 text-white/20 normal-case">({section.files.length} items)</span>
-                                </h4>
-                              </div>
-                            </button>
-                            
-                            <AnimatePresence>
-                              {expandedFolders[section.id] && (
-                                <motion.div 
-                                  initial={{ height: 0, opacity: 0 }}
-                                  animate={{ height: "auto", opacity: 1 }}
-                                  exit={{ height: 0, opacity: 0 }}
-                                  className="overflow-hidden"
-                                >
-                                  <div className="p-3 pt-0 space-y-1 border-t border-white/5">
-                                    {section.files.length === 0 ? (
-                                      <p className="text-[9px] font-mono text-white/10 italic py-2 pl-5">No files detected</p>
-                                    ) : (
-                                      section.files.map((f, fidx) => (
-                                        <div key={fidx} className="flex justify-between items-center text-[9px] font-mono group/file py-1 hover:bg-white/5 pl-5 rounded">
-                                          <span className="text-white/60 truncate max-w-[250px]">{f.name}</span>
-                                          <div className="flex items-center gap-3">
-                                            <span className="text-white/20">{(f.size / 1024 / 1024).toFixed(2)}MB</span>
-                                            <a 
-                                              href={section.id === "final" ? `/api/download/${job.id}` : `/api/download/${job.id}/chunks/${f.name}`}
-                                              className="opacity-0 group-hover/file:opacity-100 transition-opacity p-1 bg-emerald-500/10 rounded hover:bg-emerald-500/20"
-                                              title="Download Forensic Asset"
-                                            >
-                                              <Download className="w-2.5 h-2.5 text-emerald-500" />
-                                            </a>
-                                          </div>
-                                        </div>
-                                      ))
-                                    )}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-                        ))}
-                      </motion.div>
-                    )}
-                  </div>
 
                   {job.status === "failed" && (
                     <div className="mt-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-lg flex items-start gap-3">

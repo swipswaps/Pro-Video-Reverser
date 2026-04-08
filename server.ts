@@ -243,6 +243,34 @@ async function startServer() {
     res.json(job);
   });
 
+  app.get("/api/media", (req, res) => {
+    const filePath = req.query.path as string;
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    // Ensure we are serving a video file
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    res.sendFile(filePath, {
+      maxAge: 0,
+      lastModified: false,
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Accept-Ranges': 'bytes'
+      }
+    }, (err) => {
+      if (err) {
+        console.error("Error sending file:", err);
+        if (!res.headersSent) {
+          res.status(500).end();
+        }
+      }
+    });
+  });
+
   app.get("/api/download/:id", (req, res) => {
     let job = jobs[req.params.id];
     if (!job) {
@@ -274,8 +302,9 @@ async function startServer() {
     const scan = (dir: string) => {
       if (!fs.existsSync(dir)) return [];
       return fs.readdirSync(dir).map(f => {
-        const stats = fs.statSync(path.join(dir, f));
-        return { name: f, size: stats.size, mtime: stats.mtime };
+        const fullPath = path.join(dir, f);
+        const stats = fs.statSync(fullPath);
+        return { name: f, size: stats.size, mtime: stats.mtime, path: fullPath };
       });
     };
 
@@ -513,6 +542,8 @@ async function runJob(jobId: string) {
         "-tune", "fastdecode",
         "-crf", "23",
         "-c:a", "aac",
+        "-ar", "44100",
+        "-ac", "2",
         "-movflags", "+faststart",
         finalOutputPath
       ], (msg) => log(jobId, msg));
