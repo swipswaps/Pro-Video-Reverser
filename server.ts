@@ -434,7 +434,10 @@ async function runJob(jobId: string) {
           "-y", "-i", inputPath,
           "-vf", "reverse",
           "-af", "areverse",
+          "-c:v", "libx264",
+          "-c:a", "aac",
           "-preset", "ultrafast",
+          "-crf", "23",
           "-threads", "1",
           outputPath
         ], (msg) => {});

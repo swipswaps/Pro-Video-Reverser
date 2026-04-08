@@ -180,6 +180,10 @@ export default function App() {
             <Cpu className="w-3 h-3" />
             Throttled Mode Active
           </div>
+          <div className="flex items-center gap-2 text-emerald-400 font-mono text-[10px] border-l border-white/10 pl-4">
+            <TerminalIcon className="w-3 h-3" />
+            TUI: npm run tui
+          </div>
         </div>
       </header>
 
@@ -341,13 +345,23 @@ export default function App() {
                         <motion.div 
                           initial={{ opacity: 0, height: 0 }}
                           animate={{ opacity: 1, height: "auto" }}
-                          className="rounded-lg overflow-hidden border border-white/10 bg-black"
+                          className="rounded-lg overflow-hidden border border-white/10 bg-black relative"
                         >
                           <video 
                             controls 
                             className="w-full aspect-video"
                             src={`/api/download/${job.id}?preview=true`}
-                          />
+                          >
+                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-8 text-center">
+                              <AlertCircle className="w-8 h-8 text-amber-500 mb-4" />
+                              <p className="text-xs font-mono text-white/60">
+                                Browser codec mismatch (MPEG-4 Part 2 detected).
+                              </p>
+                              <p className="text-[10px] font-mono text-white/40 mt-2">
+                                Use VLC/MPlayer or download the final result.
+                              </p>
+                            </div>
+                          </video>
                         </motion.div>
                       )}
                     </div>
