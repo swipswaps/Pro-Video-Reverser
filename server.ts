@@ -8,6 +8,7 @@ import fs from "fs-extra";
 import { spawn } from "child_process";
 import youtubedl from "youtube-dl-exec";
 import crypto from "crypto";
+import Database from "better-sqlite3";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,10 +16,32 @@ const __dirname = path.dirname(__filename);
 const PORT = 3000;
 const JOBS_DIR = path.join(process.cwd(), "jobs");
 const LOG_DIR = path.join(process.cwd(), "forensic_logs");
+const DB_FILE = path.join(LOG_DIR, "jobs.db");
 
 // Ensure directories exist
 fs.ensureDirSync(JOBS_DIR);
 fs.ensureDirSync(LOG_DIR);
+
+// Initialize Database
+const db = new Database(DB_FILE);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    url TEXT,
+    status TEXT,
+    progress REAL,
+    outputFile TEXT,
+    error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT,
+    message TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(job_id) REFERENCES jobs(id)
+  );
+`);
 
 class SystemForensics {
   static async getLoadAvg(): Promise<number> {
@@ -42,10 +65,24 @@ class SystemForensics {
     return 0;
   }
 
+  static async getDiskSpace(): Promise<{ available: number; total: number }> {
+    try {
+      const df = await runCommandCapture("df -m . | tail -1");
+      const parts = df.split(/\s+/);
+      return {
+        total: parseInt(parts[1]),
+        available: parseInt(parts[3])
+      };
+    } catch {
+      return { available: 0, total: 0 };
+    }
+  }
+
   static async checkHealth() {
     const load = await this.getLoadAvg();
     const psi = await this.getPSICPU();
-    return { load, psi, timestamp: new Date().toISOString() };
+    const disk = await this.getDiskSpace();
+    return { load, psi, disk, timestamp: new Date().toISOString() };
   }
 }
 
@@ -60,6 +97,46 @@ interface Job {
 }
 
 const jobs: Record<string, Job> = {};
+
+function saveJob(job: Job) {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO jobs (id, url, status, progress, outputFile, error)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(job.id, job.url, job.status, job.progress, job.outputFile || null, job.error || null);
+}
+
+function getJobFromDb(id: string): Job | null {
+  const jobRow = db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as any;
+  if (!jobRow) return null;
+  
+  const logRows = db.prepare("SELECT message FROM logs WHERE job_id = ? ORDER BY timestamp ASC").all(id) as any[];
+  
+  return {
+    id: jobRow.id,
+    url: jobRow.url,
+    status: jobRow.status,
+    progress: jobRow.progress,
+    outputFile: jobRow.outputFile,
+    error: jobRow.error,
+    logs: logRows.map(r => r.message)
+  };
+}
+
+function log(jobId: string, message: string) {
+  const timestamp = new Date().toISOString();
+  const logLine = `[${timestamp}] ${message}`;
+  console.log(`[Job ${jobId}] ${message}`);
+  
+  const stmt = db.prepare("INSERT INTO logs (job_id, message) VALUES (?, ?)");
+  stmt.run(jobId, logLine);
+  
+  // Update in-memory cache if exists
+  if (jobs[jobId]) {
+    jobs[jobId].logs.push(logLine);
+    if (jobs[jobId].logs.length > 1000) jobs[jobId].logs.shift();
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -76,11 +153,13 @@ async function startServer() {
     // Use a stable jobId based on URL hash for idempotency
     const jobId = crypto.createHash("md5").update(url).digest("hex");
     
-    if (jobs[jobId] && (jobs[jobId].status !== "failed")) {
+    let job = getJobFromDb(jobId);
+    if (job && (job.status !== "failed")) {
+      jobs[jobId] = job; // Cache it
       return res.json({ jobId });
     }
 
-    const job: Job = {
+    job = {
       id: jobId,
       url,
       status: "pending",
@@ -89,13 +168,17 @@ async function startServer() {
     };
 
     jobs[jobId] = job;
+    saveJob(job);
     runJob(jobId);
 
     res.json({ jobId });
   });
 
   app.get("/api/jobs/:id", (req, res) => {
-    const job = jobs[req.params.id];
+    let job = jobs[req.params.id];
+    if (!job) {
+      job = getJobFromDb(req.params.id);
+    }
     if (!job) {
       return res.status(404).json({ error: "Job not found" });
     }
@@ -135,18 +218,6 @@ async function startServer() {
   });
 }
 
-function log(jobId: string, message: string) {
-  const job = jobs[jobId];
-  if (job) {
-    const timestamp = new Date().toISOString();
-    const logLine = `[${timestamp}] ${message}`;
-    console.log(`[Job ${jobId}] ${message}`);
-    job.logs.push(logLine);
-    // Keep only last 1000 logs
-    if (job.logs.length > 1000) job.logs.shift();
-  }
-}
-
 async function runJob(jobId: string) {
   const job = jobs[jobId];
   const jobDir = path.join(JOBS_DIR, jobId);
@@ -155,6 +226,12 @@ async function runJob(jobId: string) {
   const reversedDir = path.join(jobDir, "reversed");
 
   try {
+    // Disk Space Guard
+    const healthCheck = await SystemForensics.checkHealth();
+    if (healthCheck.disk.available < 500) {
+      throw new Error(`Insufficient disk space: ${healthCheck.disk.available}MB available. Need at least 500MB.`);
+    }
+
     await fs.ensureDir(jobDir);
     await fs.ensureDir(downloadDir);
     await fs.ensureDir(chunksDir);
@@ -169,6 +246,7 @@ async function runJob(jobId: string) {
       log(jobId, "Existing download found, skipping download step.");
     } else {
       job.status = "downloading";
+      saveJob(job);
       log(jobId, `Starting download from ${job.url}`);
       
       await youtubedl(job.url, {
@@ -185,6 +263,7 @@ async function runJob(jobId: string) {
       log(jobId, "Download complete");
     }
     job.progress = 25;
+    saveJob(job);
 
     // 2. Split
     const existingChunks = (await fs.readdir(chunksDir)).filter(f => f.endsWith(".mp4"));
@@ -192,6 +271,7 @@ async function runJob(jobId: string) {
       log(jobId, `Existing chunks found (${existingChunks.length}), skipping split step.`);
     } else {
       job.status = "splitting";
+      saveJob(job);
       log(jobId, "Splitting video into 60s chunks...");
       
       await runCommand("ffmpeg", [
@@ -206,9 +286,11 @@ async function runJob(jobId: string) {
       log(jobId, "Splitting complete");
     }
     job.progress = 40;
+    saveJob(job);
 
     // 3. Reverse
     job.status = "reversing";
+    saveJob(job);
     const chunkFiles = (await fs.readdir(chunksDir)).filter(f => f.endsWith(".mp4")).sort();
     const totalChunks = chunkFiles.length;
     log(jobId, `Processing ${totalChunks} chunks`);
@@ -242,6 +324,7 @@ async function runJob(jobId: string) {
       }
       
       job.progress = 40 + ((i + 1) / totalChunks) * 50;
+      saveJob(job);
     }
 
     log(jobId, "Reversal complete");
@@ -252,6 +335,7 @@ async function runJob(jobId: string) {
       log(jobId, "Final output already exists, skipping merge.");
     } else {
       job.status = "merging";
+      saveJob(job);
       log(jobId, "Merging reversed chunks...");
       
       const listFilePath = path.join(jobDir, "list.txt");
@@ -272,18 +356,13 @@ async function runJob(jobId: string) {
     job.status = "completed";
     job.progress = 100;
     job.outputFile = finalOutputPath;
-
-    // Optional: Keep intermediate files for idempotency across restarts
-    // If you want to save space, you could delete them only if the job is truly "finished" and user downloaded it.
-    // For now, let's NOT remove them so that idempotency works if the server restarts or job is re-run.
-    // await fs.remove(downloadDir);
-    // await fs.remove(chunksDir);
-    // await fs.remove(reversedDir);
+    saveJob(job);
 
   } catch (error: any) {
     log(jobId, `Error: ${error.message}`);
     job.status = "failed";
     job.error = error.message;
+    saveJob(job);
   }
 }
 
