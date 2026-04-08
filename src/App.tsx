@@ -128,6 +128,11 @@ export default function App() {
           if (res.ok) {
             const data = await res.json();
             setJob(data);
+          } else if (res.status === 404) {
+            console.warn("CLIENT: Active job not found on server, clearing state.");
+            setJob(null);
+            setCurrentJobId(null);
+            localStorage.removeItem("currentJobId");
           }
         } catch (e) {
           console.error("Polling error", e);
@@ -198,8 +203,12 @@ export default function App() {
     try {
       console.log("CLIENT: Requesting delete for job", job.id);
       const res = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
-      if (res.ok) {
-        console.log("CLIENT: Job deleted successfully");
+      if (res.ok || res.status === 404) {
+        if (res.status === 404) {
+          console.warn("CLIENT: Job already gone from server, clearing local state.");
+        } else {
+          console.log("CLIENT: Job deleted successfully");
+        }
         setJob(null);
         setCurrentJobId(null);
         localStorage.removeItem("currentJobId");
