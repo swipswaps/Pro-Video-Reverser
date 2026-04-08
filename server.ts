@@ -127,7 +127,7 @@ function getJobFromDb(id: string): Job | null {
   
   const logRows = db.prepare("SELECT message FROM logs WHERE job_id = ? ORDER BY timestamp ASC").all(id) as any[];
   
-  return {
+  const job: Job = {
     id: jobRow.id,
     url: jobRow.url,
     status: jobRow.status,
@@ -136,6 +136,35 @@ function getJobFromDb(id: string): Job | null {
     error: jobRow.error,
     logs: logRows.map(r => r.message)
   };
+
+  // Forensic Discovery: Reconstruct chunk state from filesystem
+  const jobDir = path.join(JOBS_DIR, id);
+  const downloadDir = path.join(jobDir, "download");
+  const chunksDir = path.join(jobDir, "chunks");
+  const reversedDir = path.join(jobDir, "reversed");
+
+  try {
+    const downloadPath = path.join(downloadDir, "input.mp4");
+    const downloaded = fs.existsSync(downloadPath) && fs.statSync(downloadPath).size > 0;
+    
+    let total = 0;
+    let completed: string[] = [];
+    
+    if (fs.existsSync(chunksDir)) {
+      const chunkFiles = fs.readdirSync(chunksDir).filter(f => f.endsWith(".mp4"));
+      total = chunkFiles.length;
+    }
+    
+    if (fs.existsSync(reversedDir)) {
+      completed = fs.readdirSync(reversedDir).filter(f => f.endsWith(".mp4"));
+    }
+
+    job.chunks = { total, completed, downloaded };
+  } catch (e) {
+    console.error(`[FORENSIC:ERROR] Failed to reconstruct state for ${id}:`, e);
+  }
+
+  return job;
 }
 
 function log(jobId: string, message: string) {
@@ -190,9 +219,10 @@ async function startServer() {
   });
 
   app.get("/api/jobs/active", (req, res) => {
-    const activeJob = db.prepare("SELECT id FROM jobs WHERE status NOT IN ('completed', 'failed') ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
-    if (activeJob) {
-      const job = jobs[activeJob.id] || getJobFromDb(activeJob.id);
+    // Return the most recent job, regardless of status, so the UI can "snap" to it
+    const latestJob = db.prepare("SELECT id FROM jobs ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
+    if (latestJob) {
+      const job = jobs[latestJob.id] || getJobFromDb(latestJob.id);
       return res.json(job);
     }
     res.json(null);
