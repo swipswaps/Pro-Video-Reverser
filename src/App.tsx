@@ -32,6 +32,9 @@ export default function App() {
   const [systemHealth, setSystemHealth] = useState<{ load: number; psi: number; disk: { available: number; total: number }; zombies: number } | null>(null);
   const [showPreview, setShowPreview] = useState(false);
   const [showExplorer, setShowExplorer] = useState(false);
+  const [isTuiMode, setIsTuiMode] = useState(false);
+  const [hasUpdate, setHasUpdate] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
   const [jobFiles, setJobFiles] = useState<{ download: any[], chunks: any[], reversed: any[], final: any[] } | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -52,6 +55,37 @@ export default function App() {
     };
     discoverActiveJob();
   }, []);
+
+  useEffect(() => {
+    const checkUpdate = async () => {
+      try {
+        const res = await fetch("/api/system/update-check");
+        if (res.ok) {
+          const data = await res.json();
+          setHasUpdate(data.hasUpdate);
+        }
+      } catch (e) {
+        console.error("Update check error", e);
+      }
+    };
+    checkUpdate();
+    const interval = setInterval(checkUpdate, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const applyUpdate = async () => {
+    setIsUpdating(true);
+    try {
+      const res = await fetch("/api/system/update-apply", { method: "POST" });
+      if (res.ok) {
+        window.location.reload();
+      }
+    } catch (e) {
+      console.error("Update apply error", e);
+    } finally {
+      setIsUpdating(false);
+    }
+  };
 
   useEffect(() => {
     const fetchHealth = async () => {
@@ -184,13 +218,125 @@ export default function App() {
             <TerminalIcon className="w-3 h-3" />
             TUI: npm run tui
           </div>
+          <button 
+            onClick={() => setIsTuiMode(!isTuiMode)}
+            className={`ml-4 px-3 py-1 rounded border text-[10px] font-mono uppercase tracking-widest transition-colors ${isTuiMode ? 'bg-emerald-500 text-black border-emerald-500' : 'bg-transparent text-white/40 border-white/10 hover:border-emerald-500/50'}`}
+          >
+            {isTuiMode ? "Exit TUI Mode" : "TUI Mode"}
+          </button>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Input Section */}
-        <section className="lg:col-span-5 space-y-8">
-          <div className="bg-[#141414] border border-white/10 rounded-xl p-8 shadow-2xl relative overflow-hidden group">
+      {hasUpdate && (
+        <div className="bg-emerald-500/10 border-y border-emerald-500/20 px-6 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
+            <span className="text-[10px] font-mono text-emerald-400 uppercase tracking-widest">Update Available: New forensic features staged on GitHub</span>
+          </div>
+          <button 
+            onClick={applyUpdate}
+            disabled={isUpdating}
+            className="bg-emerald-500 hover:bg-emerald-400 text-black text-[9px] font-bold px-4 py-1 rounded uppercase tracking-widest transition-all disabled:opacity-50"
+          >
+            {isUpdating ? "Applying..." : "1-Click Update"}
+          </button>
+        </div>
+      )}
+
+      <main className={`max-w-6xl mx-auto p-6 grid gap-8 ${isTuiMode ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-12'}`}>
+        {isTuiMode ? (
+          <section className="space-y-6 font-mono">
+            <div className="bg-black border border-emerald-500/30 p-4 shadow-[0_0_20px_rgba(16,185,129,0.1)]">
+              <div className="flex justify-between items-center mb-4 border-b border-emerald-500/20 pb-2">
+                <span className="text-emerald-500 text-xs uppercase tracking-[0.3em]">System.Telemetry.v1</span>
+                <span className="text-emerald-500/40 text-[9px]">{new Date().toISOString()}</span>
+              </div>
+              <div className="grid grid-cols-4 gap-8">
+                <div>
+                  <p className="text-emerald-500/40 text-[9px] uppercase mb-1">CPU_LOAD</p>
+                  <div className="flex items-end gap-1 h-8">
+                    {Array.from({length: 10}).map((_, i) => (
+                      <div key={i} className={`w-1 bg-emerald-500/40`} style={{height: `${Math.random() * 100}%`}} />
+                    ))}
+                    <span className="text-emerald-500 text-sm ml-2">{systemHealth?.load.toFixed(2)}</span>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-emerald-500/40 text-[9px] uppercase mb-1">MEM_PSI</p>
+                  <p className="text-emerald-500 text-sm">{systemHealth?.psi.toFixed(1)}%</p>
+                </div>
+                <div>
+                  <p className="text-emerald-500/40 text-[9px] uppercase mb-1">DISK_FREE</p>
+                  <p className="text-emerald-500 text-sm">{systemHealth ? (systemHealth.disk.available / 1024).toFixed(1) : "0.0"}GB</p>
+                </div>
+                <div>
+                  <p className="text-emerald-500/40 text-[9px] uppercase mb-1">ZOMBIE_PROC</p>
+                  <p className="text-emerald-500 text-sm">{systemHealth?.zombies || 0}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-12 gap-6">
+              <div className="col-span-8 bg-black border border-emerald-500/30 p-4">
+                <h3 className="text-emerald-500 text-[10px] uppercase tracking-widest mb-4 flex items-center gap-2">
+                  <TerminalIcon className="w-3 h-3" />
+                  Active_Pipeline_Status
+                </h3>
+                {!job ? (
+                  <p className="text-emerald-500/20 text-[10px] italic">NO_ACTIVE_JOB_DETECTED</p>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-emerald-500/60">ID: {job.id}</span>
+                      <span className="text-emerald-500">{job.status.toUpperCase()}</span>
+                    </div>
+                    <div className="h-1 bg-emerald-500/10 w-full">
+                      <div className="h-full bg-emerald-500" style={{width: `${job.progress}%`}} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="text-[9px] text-emerald-500/40">
+                        SOURCE: {job.url}
+                      </div>
+                      <div className="text-[9px] text-emerald-500/40 text-right">
+                        CHUNKS: {job.chunks?.completed.length} / {job.chunks?.total}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="col-span-4 bg-black border border-emerald-500/30 p-4">
+                <h3 className="text-emerald-500 text-[10px] uppercase tracking-widest mb-4">Forensic_Files</h3>
+                <div className="space-y-1 text-[9px]">
+                  {jobFiles?.final.map((f, i) => (
+                    <div key={i} className="flex justify-between text-emerald-500/60">
+                      <span>{f.name}</span>
+                      <span>{(f.size / 1024 / 1024).toFixed(1)}MB</span>
+                    </div>
+                  ))}
+                  {jobFiles?.reversed.slice(0, 5).map((f, i) => (
+                    <div key={i} className="flex justify-between text-emerald-500/30">
+                      <span>{f.name}</span>
+                      <span>{(f.size / 1024 / 1024).toFixed(1)}MB</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-black border border-emerald-500/30 p-4 h-48 overflow-hidden">
+              <h3 className="text-emerald-500 text-[10px] uppercase tracking-widest mb-2 border-b border-emerald-500/20 pb-1">System_Logs</h3>
+              <div className="space-y-1">
+                {job?.logs.slice(-10).map((log, i) => (
+                  <p key={i} className="text-[9px] text-emerald-500/40 font-mono truncate">{log}</p>
+                ))}
+              </div>
+            </div>
+          </section>
+        ) : (
+          <>
+            {/* Input Section */}
+            <section className="lg:col-span-5 space-y-8">
+              <div className="bg-[#141414] border border-white/10 rounded-xl p-8 shadow-2xl relative overflow-hidden group">
             <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
               <Video className="w-24 h-24" />
             </div>
@@ -449,7 +595,9 @@ export default function App() {
             )}
           </AnimatePresence>
         </section>
-      </main>
+      </>
+    )}
+  </main>
 
       <footer className="max-w-6xl mx-auto p-12 text-center">
         <p className="text-[10px] uppercase tracking-[0.4em] text-white/20 font-mono">

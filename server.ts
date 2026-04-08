@@ -9,6 +9,10 @@ import { spawn } from "child_process";
 import youtubedl from "youtube-dl-exec";
 import crypto from "crypto";
 import Database from "better-sqlite3";
+import { exec } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -290,6 +294,27 @@ async function startServer() {
     res.json(health);
   });
 
+  app.get("/api/system/update-check", async (req, res) => {
+    try {
+      await execAsync("git fetch");
+      const status = await execAsync("git status -uno");
+      const hasUpdate = status.stdout.includes("Your branch is behind");
+      res.json({ hasUpdate });
+    } catch (e) {
+      res.json({ hasUpdate: false, error: String(e) });
+    }
+  });
+
+  app.post("/api/system/update-apply", async (req, res) => {
+    try {
+      await execAsync("git pull");
+      res.json({ success: true });
+      // The server will likely restart due to file changes if running via tsx/nodemon
+    } catch (e) {
+      res.status(500).json({ error: String(e) });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -435,6 +460,7 @@ async function runJob(jobId: string) {
           "-vf", "reverse",
           "-af", "areverse",
           "-c:v", "libx264",
+          "-pix_fmt", "yuv420p",
           "-c:a", "aac",
           "-preset", "ultrafast",
           "-crf", "23",
