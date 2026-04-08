@@ -62,10 +62,8 @@ const jobTable = grid.set(4, 0, 4, 9, contrib.table, {
 const fileTree = grid.set(0, 9, 8, 3, contrib.tree, {
   label: ' FORENSIC FILE EXPLORER ',
   style: { text: "white" },
-  keys: true,
-  vi: true,
-  mouse: true,
-  interactive: true
+  template: { lines: true },
+  mouse: true
 });
 
 // 5. Update Status
@@ -115,12 +113,10 @@ fileTree.on('select', (node: any) => {
 });
 
 // Robust mouse clicking for tree
-fileTree.rows.on('click', () => {
-  const index = fileTree.rows.selected;
-  if (index !== -1) {
-    // blessed-contrib tree stores the nodes in an internal array that matches the list
-    // but it's easier to just trigger the 'select' event which contrib handles
-    fileTree.rows.emit('action', fileTree.rows.items[index], index);
+(fileTree.rows as any).on('click', () => {
+  const index = (fileTree.rows as any).selected;
+  if (index !== undefined && index !== -1) {
+    fileTree.rows.emit('action', (fileTree.rows as any).items[index], index);
   }
 });
 
