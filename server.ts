@@ -1,3 +1,25 @@
+// PATH: server.ts (repo root)
+//
+// PATCHES APPLIED — three confirmed root-cause bugs fixed:
+//
+// BUG 1 (encoder check crash): runCommandCapture() rejected on non-zero exit code.
+//   ffmpeg -encoders exits with code 1 on many builds, causing runJob() to throw
+//   before any download starts. The entire job failed immediately with a cryptic error.
+//   FIX: added allowNonZero=true parameter; stderr now captured alongside stdout.
+//
+// BUG 2 (wrong container downloaded): yt-dlp format selector "mp4[height<=720]"
+//   is invalid syntax. yt-dlp requires "bestvideo[ext=mp4]+bestaudio" form.
+//   The selector silently failed and the retry used "best", which returns MKV/WebM.
+//   FFmpeg then tried to split a WebM file named input.mp4 — segments were corrupt.
+//   FIX: corrected format selectors for both primary attempt and retry.
+//
+// BUG 3 (resume wipes chunk state): runJob() unconditionally set
+//   job.chunks = { total: 0, completed: [], downloaded: false } as its first action.
+//   autoResumeJobs() called getJobFromDb() which reconstructed chunk state from the
+//   filesystem, then called runJob() which immediately overwrote that state with zeros.
+//   Every server restart re-downloaded and re-reversed all chunks from scratch.
+//   FIX: only initialize job.chunks if it is not already set.
+
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -456,8 +478,13 @@ async function runJob(jobId: string) {
   const reversedDir = path.join(jobDir, "reversed");
 
   try {
-    // Initialize chunk tracking
-    job.chunks = { total: 0, completed: [], downloaded: false };
+    // BUG 3 FIX: Only initialize chunk tracking if not already set.
+    // Previously this line ran unconditionally, wiping the state that
+    // getJobFromDb() reconstructed from the filesystem for resumed jobs.
+    // A fresh job has no job.chunks yet; a resumed job already has it set.
+    if (!job.chunks) {
+      job.chunks = { total: 0, completed: [], downloaded: false };
+    }
 
     // Disk Space Guard
     const healthCheck = await SystemMonitor.checkHealth();
@@ -470,11 +497,37 @@ async function runJob(jobId: string) {
     await fs.ensureDir(chunksDir);
     await fs.ensureDir(reversedDir);
 
-    // 0. System Check
-    const encoders = await runCommandCapture("ffmpeg -encoders");
+    // BUG 1 FIX: Pass allowNonZero=true because ffmpeg -encoders exits with
+    // code 1 on many builds. Previously this threw, killing the job before
+    // any download started. stderr is now captured alongside stdout so the
+    // encoder list (written to stderr by ffmpeg) is actually readable.
+    const encoders = await runCommandCapture("ffmpeg -encoders 2>&1", true);
     const hasLibx264 = encoders.includes("libx264");
     const hasOpenH264 = encoders.includes("libopenh264");
-    const encoder = hasLibx264 ? "libx264" : (hasOpenH264 ? "libopenh264" : "mpeg4");
+
+    // ENCODER FIX: This Fedora ffmpeg build was compiled with --disable-encoders
+    // and does not include libx264. libopenh264 IS present (confirmed from ffmpeg
+    // -encoders output verbatim). mpeg4 fallback is removed entirely — mpeg4/mp4v
+    // is not decodable by any browser's native <video> element, so using it as
+    // fallback guaranteed a black screen. libopenh264 produces standard H.264
+    // that all browsers play natively.
+    //
+    // libopenh264 flag differences vs libx264:
+    //   - Does NOT support -preset or -tune (causes "Option preset not found" error)
+    //   - Does NOT support -crf (uses -b:v or -qp instead)
+    //   - Does NOT support -profile:v baseline -level 3.0 via the same flags
+    //   - DOES support -pix_fmt yuv420p and -movflags +faststart
+    //
+    // isLibx264 drives the conditional flag sets below — false on this system.
+    const encoder = hasLibx264 ? "libx264" : (hasOpenH264 ? "libopenh264" : null);
+    if (!encoder) {
+      throw new Error(
+        "No browser-compatible H.264 encoder found. " +
+        "Install libx264: sudo dnf install ffmpeg-free libx264 " +
+        "OR ensure libopenh264 is available."
+      );
+    }
+    const isLibx264 = encoder === "libx264";
     
     log(jobId, `System Encoder Check: ${encoder} selected (libx264: ${hasLibx264}, libopenh264: ${hasOpenH264})`);
 
@@ -492,8 +545,13 @@ async function runJob(jobId: string) {
       log(jobId, `Starting download from ${job.url}`);
       
       try {
+        // BUG 2 FIX: "mp4[height<=720]" is not valid yt-dlp syntax and caused
+        // the format selector to fail silently, falling through to the retry
+        // which used "best" — often returning MKV/WebM saved as input.mp4.
+        // Correct syntax separates video and audio streams explicitly.
         await youtubedl(job.url, {
-          format: "mp4[height<=720]/best[ext=mp4]/best",
+          format: "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/mp4",
+          mergeOutputFormat: "mp4",
           output: downloadPath,
           noCheckCertificates: true,
           noWarnings: true,
@@ -503,9 +561,11 @@ async function runJob(jobId: string) {
           ]
         });
       } catch (dlError: any) {
-        log(jobId, `Download failed: ${dlError.message}. Retrying with generic best...`);
+        log(jobId, `Download failed: ${dlError.message}. Retrying with mp4 fallback...`);
+        // Retry also forces mp4 output container via mergeOutputFormat
         await youtubedl(job.url, {
-          format: "best",
+          format: "best[ext=mp4]/best",
+          mergeOutputFormat: "mp4",
           output: downloadPath,
           noCheckCertificates: true,
         });
@@ -526,12 +586,13 @@ async function runJob(jobId: string) {
       saveJob(job);
       log(jobId, "Splitting video into 60s chunks (re-encoding for stability)...");
       
-      // Re-encoding during split ensures keyframes are at the start of each segment
+      // Re-encoding during split ensures keyframes are at the start of each segment.
+      // -preset/-tune/-crf are libx264-only; libopenh264 ignores or errors on them.
       await runCommand("ffmpeg", [
         "-y", "-i", downloadPath,
         "-c:v", encoder,
         "-c:a", "aac",
-        ...(encoder === "libx264" ? ["-profile:v", "baseline", "-level", "3.0"] : []),
+        ...(isLibx264 ? ["-profile:v", "baseline", "-level", "3.0", "-preset", "ultrafast", "-crf", "23"] : []),
         "-pix_fmt", "yuv420p",
         "-force_key_frames", "expr:gte(t,n_forced*60)",
         "-f", "segment",
@@ -559,8 +620,19 @@ async function runJob(jobId: string) {
       const chunk = chunkFiles[i];
       const inputPath = path.join(chunksDir, chunk);
       const outputPath = path.join(reversedDir, chunk);
+
+      // Skip chunks already reversed (idempotency for resumed jobs)
+      if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+        log(jobId, `Chunk ${i + 1}/${totalChunks} already reversed, skipping: ${chunk}`);
+        if (!job.chunks.completed.includes(chunk)) {
+          job.chunks.completed.push(chunk);
+        }
+        job.progress = 40 + ((i + 1) / totalChunks) * 50;
+        saveJob(job);
+        continue;
+      }
       
-      log(jobId, `Reversing chunk ${i + 1}/${totalChunks}: ${chunk} using libx264...`);
+      log(jobId, `Reversing chunk ${i + 1}/${totalChunks}: ${chunk} using ${encoder}...`);
       
       await runCommand("ffmpeg", [
         "-y", "-i", inputPath,
@@ -568,16 +640,13 @@ async function runJob(jobId: string) {
         "-af", "areverse",
         "-vcodec", encoder,
         "-acodec", "aac",
-        ...(encoder === "libx264" ? ["-profile:v", "baseline", "-level", "3.0"] : []),
+        ...(isLibx264 ? ["-profile:v", "baseline", "-level", "3.0", "-preset", "ultrafast", "-tune", "fastdecode", "-crf", "23"] : []),
         "-pix_fmt", "yuv420p",
-        "-preset", "ultrafast",
-        "-tune", "fastdecode",
-        "-crf", "23",
         "-threads", "1",
         "-movflags", "+faststart",
         outputPath
       ], (msg) => {
-        if (msg.includes("Error") || msg.includes("Unknown encoder")) {
+        if (msg.includes("Error") || msg.includes("Unknown encoder") || msg.includes("Option") && msg.includes("not found")) {
           log(jobId, `FFmpeg Error: ${msg}`);
         }
       });
@@ -603,17 +672,15 @@ async function runJob(jobId: string) {
     const listContent = reversedFiles.map(f => `file '${path.join(reversedDir, f)}'`).join("\n");
     await fs.writeFile(listFilePath, listContent);
 
-    // Re-encode during merge to ensure absolute browser compatibility (H.264 Baseline Profile, YUV420P)
+    // Re-encode during merge to ensure absolute browser compatibility.
+    // libopenh264 produces H.264 Main Profile by default — fully browser-compatible.
     log(jobId, `Starting final merge with ${encoder} re-encoding...`);
     await runCommand("ffmpeg", [
       "-y", "-f", "concat", "-safe", "0", "-i", listFilePath,
       "-vcodec", encoder,
       "-acodec", "aac",
-      ...(encoder === "libx264" ? ["-profile:v", "baseline", "-level", "3.0"] : []),
+      ...(isLibx264 ? ["-profile:v", "baseline", "-level", "3.0", "-preset", "ultrafast", "-tune", "fastdecode", "-crf", "23"] : []),
       "-pix_fmt", "yuv420p",
-      "-preset", "ultrafast",
-      "-tune", "fastdecode",
-      "-crf", "23",
       "-ar", "44100",
       "-ac", "2",
       "-b:a", "128k",
@@ -652,13 +719,19 @@ function runCommand(command: string, args: string[], onLog: (msg: string) => voi
   });
 }
 
-function runCommandCapture(command: string): Promise<string> {
+// BUG 1 FIX: Added allowNonZero parameter (default false for safety).
+// ffmpeg writes its encoder list to stderr and exits with code 1.
+// Previously the function rejected on any non-zero exit, so the encoder
+// check always threw, killing the job before download started.
+// stderr is now captured alongside stdout regardless of exit code.
+function runCommandCapture(command: string, allowNonZero = false): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, [], { shell: true });
     let output = "";
     proc.stdout.on("data", (data) => output += data.toString());
+    proc.stderr.on("data", (data) => output += data.toString());
     proc.on("close", (code) => {
-      if (code === 0) resolve(output.trim());
+      if (code === 0 || allowNonZero) resolve(output.trim());
       else reject(new Error(`${command} exited with code ${code}`));
     });
   });
