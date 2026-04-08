@@ -198,15 +198,18 @@ async function startServer() {
       return res.status(400).json({ error: "URL is required" });
     }
 
+    console.log(`SERVER: Received request to initialize job for ${url}`);
     // Use a stable jobId based on URL hash for idempotency
     const jobId = crypto.createHash("md5").update(url).digest("hex");
     
     // Force fresh start if job already exists but user is re-initializing
     const jobDir = path.join(JOBS_DIR, jobId);
     if (fs.existsSync(jobDir)) {
+      console.log(`SERVER: Wiping existing job directory for ${jobId}`);
       await fs.remove(jobDir);
     }
     // Also clear from DB to ensure fresh runJob
+    console.log(`SERVER: Clearing existing job record for ${jobId}`);
     db.prepare("DELETE FROM jobs WHERE id = ?").run(jobId);
     delete jobs[jobId];
 
@@ -220,6 +223,7 @@ async function startServer() {
 
     jobs[jobId] = job;
     saveJob(job);
+    console.log(`SERVER: Starting runJob for ${jobId}`);
     runJob(jobId);
 
     res.json({ jobId });
@@ -248,19 +252,21 @@ async function startServer() {
 
   app.delete("/api/jobs/:id", async (req, res) => {
     const { id } = req.params;
-    console.log(`API: Deleting job ${id}`);
+    console.log(`SERVER: Deleting job ${id}`);
     const jobDir = path.join(JOBS_DIR, id);
     try {
       if (fs.existsSync(jobDir)) {
+        console.log(`SERVER: Removing directory ${jobDir}`);
         await fs.remove(jobDir);
       }
+      console.log(`SERVER: Deleting job ${id} from database`);
       db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
       delete jobs[id];
-      console.log(`API: Job ${id} deleted successfully`);
+      console.log(`SERVER: Job ${id} deleted successfully`);
       res.json({ success: true });
     } catch (error) {
-      console.error(`API: Error deleting job ${id}:`, error);
-      res.status(500).json({ error: "Failed to delete job" });
+      console.error(`SERVER: Error deleting job ${id}:`, error);
+      res.status(500).json({ error: `Failed to delete job: ${error instanceof Error ? error.message : String(error)}` });
     }
   });
 

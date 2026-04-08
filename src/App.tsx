@@ -45,6 +45,9 @@ export default function App() {
   });
   const logEndRef = useRef<HTMLDivElement>(null);
 
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   useEffect(() => {
     const discoverActiveJob = async () => {
       try {
@@ -54,6 +57,7 @@ export default function App() {
           if (data) {
             setCurrentJobId(data.id);
             setJob(data);
+            localStorage.setItem("currentJobId", data.id);
           }
         }
       } catch (e) {
@@ -147,6 +151,7 @@ export default function App() {
       if (res.ok) {
         const { jobId } = await res.json();
         setCurrentJobId(jobId);
+        localStorage.setItem("currentJobId", jobId);
         setJob({
           id: jobId,
           url,
@@ -183,23 +188,30 @@ export default function App() {
   }, [selectedFilePath, job?.outputFile]);
 
   const deleteJob = async () => {
-    if (!job) return;
-    // Removed confirm() as it may be blocked in iFrame
+    if (!job || isDeleting) return;
+    setIsDeleting(true);
+    setDeleteError(null);
     try {
-      console.log("Deleting job:", job.id);
+      console.log("CLIENT: Requesting delete for job", job.id);
       const res = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
       if (res.ok) {
-        console.log("Job deleted successfully");
+        console.log("CLIENT: Job deleted successfully");
         setJob(null);
         setCurrentJobId(null);
+        localStorage.removeItem("currentJobId");
         setSelectedFilePath(null);
         setJobFiles(null);
         setPlaybackError(false);
       } else {
-        console.error("Failed to delete job:", await res.text());
+        const errText = await res.text();
+        console.error("CLIENT: Failed to delete job:", errText);
+        setDeleteError(`Delete failed: ${errText}`);
       }
-    } catch (e) {
-      console.error("Delete error", e);
+    } catch (e: any) {
+      console.error("CLIENT: Delete error", e);
+      setDeleteError(`Network error: ${e.message}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -523,20 +535,26 @@ export default function App() {
                          <Loader2 className="w-4 h-4 animate-spin" />}
                         Status: {job.status}
                       </h3>
-                      <div className="flex items-center gap-3 mt-1">
-                        <p className="text-[10px] text-white/40 font-mono truncate max-w-[200px]">JOB_ID: {job.id}</p>
-                        <button 
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            console.log("Delete button clicked");
-                            deleteJob();
-                          }}
-                          className="relative z-50 px-3 py-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-bold uppercase tracking-tighter transition-all rounded shadow-lg flex items-center gap-1 active:scale-95"
-                        >
-                          <AlertCircle className="w-3 h-3" />
-                          DELETE JOB
-                        </button>
+                      <div className="flex flex-col gap-2 mt-1">
+                        <div className="flex items-center gap-3">
+                          <p className="text-[10px] text-white/40 font-mono truncate max-w-[200px]">JOB_ID: {job.id}</p>
+                          <button 
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              console.log("CLIENT: Delete button clicked");
+                              deleteJob();
+                            }}
+                            disabled={isDeleting}
+                            className={`relative z-50 px-3 py-1 ${isDeleting ? 'bg-red-900' : 'bg-red-600 hover:bg-red-500'} text-white text-[10px] font-bold uppercase tracking-tighter transition-all rounded shadow-lg flex items-center gap-1 active:scale-95 disabled:opacity-50`}
+                          >
+                            {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <AlertCircle className="w-3 h-3" />}
+                            {isDeleting ? "DELETING..." : "DELETE JOB"}
+                          </button>
+                        </div>
+                        {deleteError && (
+                          <p className="text-[9px] text-rose-500 font-mono uppercase tracking-widest">{deleteError}</p>
+                        )}
                       </div>
                     </div>
                     <div className="text-right">
