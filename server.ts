@@ -586,8 +586,20 @@ async function startServer() {
     }
 
     const range = req.headers.range;
+
+    // ETag based on file size + mtime — lets Firefox revalidate without re-downloading.
+    // If the file hasn't changed (same job output), Firefox uses its buffer.
+    // If the file changed (new reverse run), the ETag differs and Firefox re-fetches.
+    const mtime  = fs.statSync(filePath).mtimeMs;
+    const etag   = `"${fileSize}-${Math.floor(mtime)}"`;
+    const ifNone = req.headers["if-none-match"];
+    if (ifNone === etag) {
+      res.writeHead(304); res.end(); return;
+    }
+
     const cacheHeaders = {
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': 'no-cache',   // revalidate on every load, but use cache if ETag matches
+      'ETag':          etag,
       'Accept-Ranges': 'bytes',
     };
 

@@ -112,19 +112,21 @@ export default function App() {
   const [logsOpen, setLogsOpen]             = useState(true);
 
   const logEndRef   = useRef<HTMLDivElement>(null);
-  const cacheBust   = useRef(Date.now());
+  const videoRef    = useRef<HTMLVideoElement>(null);
+  const cacheBust   = useRef(0); // kept for API compat but no longer appended to URL
   const prevSrcKey  = useRef("");
 
-  // ── Stable player src ────────────────────────────────────────────────────
+  // ── Stable player src — NO cache-bust token ───────────────────────────────
+  // Cache-bust tokens change the URL on every load, preventing Firefox from
+  // reusing its buffer state and forcing it to re-download from byte 0 each
+  // time. The video element key handles DOM recreation when the file changes.
+  // The server's Cache-Control: public, max-age=3600 can now actually work.
   const playerSrc = useMemo(() => {
     const key = selectedFile || job?.outputFile || "";
-    if (key !== prevSrcKey.current) {
-      cacheBust.current = Date.now();
-      prevSrcKey.current = key;
-    }
+    prevSrcKey.current = key;
     if (!key) return null;
     if (key.startsWith("http")) return key;
-    return `/api/media?path=${encodeURIComponent(key)}&t=${cacheBust.current}`;
+    return `/api/media?path=${encodeURIComponent(key)}`;
   }, [selectedFile, job?.outputFile]);
 
   const playerFilename = (selectedFile || job?.outputFile || "").split("/").pop() || null;
@@ -194,14 +196,16 @@ export default function App() {
   useEffect(() => { setPlaybackError(false); }, [selectedFile, job?.outputFile]);
 
   // Keep-warm: prevent OS page-cache eviction during player pause.
-  // Linux drops files from page cache after ~20s idle — causing the cold-start
-  // delay on resume. A lightweight ping every 10s resets the eviction timer.
+  // 5s interval (was 10s) — tighter under memory pressure (swap active on this machine).
+  // On seek: send a warm request with the target byte offset so the server
+  // pre-reads 2MB ahead of the seek point before Firefox requests it.
   useEffect(() => {
     const fileToWarm = selectedFile || job?.outputFile;
     if (!fileToWarm || fileToWarm.startsWith("http")) return;
-    const ping = () => fetch(`/api/media/warm?path=${encodeURIComponent(fileToWarm)}`).catch(() => {});
+    const ping = (offset = 0) =>
+      fetch(`/api/media/warm?path=${encodeURIComponent(fileToWarm)}&offset=${offset}`).catch(() => {});
     ping();
-    const t = setInterval(ping, 10000);
+    const t = setInterval(() => ping(), 5000);
     return () => clearInterval(t);
   }, [selectedFile, job?.outputFile]);
 
@@ -987,11 +991,27 @@ export default function App() {
               {playerSrc ? (
                 <>
                   <video
-                    key={playerSrc}
+                    ref={videoRef}
+                    key={selectedFile || job?.outputFile || ""}
                     controls playsInline autoPlay preload="auto"
                     style={{ transform: cssTransform }}
                     onCanPlay={() => setPlaybackError(false)}
                     onError={() => setPlaybackError(true)}
+                    onSeeking={() => {
+                      // When user seeks, tell the server to pre-warm 2MB at the
+                      // target byte offset so the read hits page cache, not disk.
+                      const vid = videoRef.current;
+                      const filePath = selectedFile || job?.outputFile;
+                      if (!vid || !filePath || filePath.startsWith("http")) return;
+                      const duration = vid.duration;
+                      if (!duration || !isFinite(duration)) return;
+                      // Approximate byte offset: (currentTime / duration) * fileSize
+                      // Server will use this to pre-read the right region.
+                      // We don't know fileSize client-side, so send time as fraction
+                      // encoded as a large offset hint — server clamps to file bounds.
+                      const fraction = vid.currentTime / duration;
+                      fetch(`/api/media/warm?path=${encodeURIComponent(filePath)}&fraction=${fraction.toFixed(4)}`).catch(() => {});
+                    }}
                   >
                     <source src={playerSrc} type="video/mp4" />
                   </video>
