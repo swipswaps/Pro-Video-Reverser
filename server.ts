@@ -48,6 +48,28 @@ const DB_FILE = path.join(LOG_DIR, "jobs.db");
 fs.ensureDirSync(JOBS_DIR);
 fs.ensureDirSync(LOG_DIR);
 
+// Tracks the active ffmpeg child process per job for pause/resume
+const activeProc: Record<string, ReturnType<typeof spawn> | null> = {};
+
+// Simple FIFO job queue — holds job IDs waiting to run.
+// Only one job runs at a time to avoid OOM on long videos.
+// When a job completes/fails, processQueue() starts the next one.
+const jobQueue: string[] = [];
+let runningJobId: string | null = null;
+
+function processQueue() {
+  if (runningJobId || jobQueue.length === 0) return;
+  const nextId = jobQueue.shift()!;
+  runningJobId = nextId;
+  const job = jobs[nextId];
+  if (!job) { runningJobId = null; processQueue(); return; }
+  console.log(`[QUEUE] Starting job ${nextId} (${jobQueue.length} remaining in queue)`);
+  runJob(nextId).finally(() => {
+    runningJobId = null;
+    processQueue();
+  });
+}
+
 // Initialize Database
 const db = new Database(DB_FILE);
 db.exec(`
@@ -66,6 +88,14 @@ db.exec(`
     message TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(job_id) REFERENCES jobs(id)
+  );
+  CREATE TABLE IF NOT EXISTS history (
+    id TEXT PRIMARY KEY,
+    url TEXT,
+    status TEXT,
+    outputFile TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
@@ -130,9 +160,12 @@ class SystemMonitor {
 interface Job {
   id: string;
   url: string;
-  sourceFile?: string | null;  // absolute local path — if set, skip download
-  status: "pending" | "downloading" | "splitting" | "reversing" | "merging" | "completed" | "failed";
+  sourceFile?: string | null;
+  status: "pending" | "downloading" | "splitting" | "reversing" | "merging" | "completed" | "failed" | "paused";
+  pausedStatus?: string | null; // the status to restore on resume
   progress: number;
+  eta?: string | null;
+  currentPhase?: string | null;
   logs: string[];
   outputFile?: string;
   error?: string;
@@ -151,6 +184,14 @@ function saveJob(job: Job) {
     VALUES (?, ?, ?, ?, ?, ?)
   `);
   stmt.run(job.id, job.url, job.status, job.progress, job.outputFile || null, job.error || null);
+
+  // Write to persistent history when job reaches a terminal state
+  if (job.status === "completed" || job.status === "failed") {
+    db.prepare(`
+      INSERT OR REPLACE INTO history (id, url, status, outputFile, finished_at)
+      VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `).run(job.id, job.url, job.status, job.outputFile || null);
+  }
 }
 
 function getJobFromDb(id: string): Job | null {
@@ -258,10 +299,21 @@ async function startServer() {
 
     jobs[jobId] = job;
     saveJob(job);
-    console.log(`SERVER: Starting runJob for ${jobId}`);
-    runJob(jobId);
+    console.log(`SERVER: Enqueuing job ${jobId} (position: ${jobQueue.length + (runningJobId ? 1 : 0)})`);
 
-    res.json({ jobId });
+    // If nothing is running, start immediately. Otherwise queue it.
+    if (!runningJobId) {
+      runningJobId = jobId;
+      runJob(jobId).finally(() => {
+        runningJobId = null;
+        processQueue();
+      });
+    } else {
+      jobQueue.push(jobId);
+      log(jobId, `Queued — ${jobQueue.length} job(s) ahead. Will start when current job completes.`);
+    }
+
+    res.json({ jobId, queued: !!runningJobId && runningJobId !== jobId, position: jobQueue.indexOf(jobId) + 1 });
   });
 
   app.get("/api/jobs/active", (req, res) => {
@@ -272,6 +324,13 @@ async function startServer() {
       return res.json(job);
     }
     res.json(null);
+  });
+
+  // Queue status — returns running job + all queued jobs in order
+  app.get("/api/queue", (req, res) => {
+    const running = runningJobId ? (jobs[runningJobId] || getJobFromDb(runningJobId)) : null;
+    const queued = jobQueue.map(id => jobs[id] || getJobFromDb(id)).filter(Boolean);
+    res.json({ running, queued });
   });
 
   app.get("/api/jobs/:id", (req, res) => {
@@ -298,7 +357,16 @@ async function startServer() {
       console.log(`SERVER: Deleting job ${id} from database`);
       db.prepare("DELETE FROM jobs WHERE id = ?").run(id);
       
-      // 3. Remove files from disk
+      // Remove from queue if waiting
+      const queueIdx = jobQueue.indexOf(id);
+      if (queueIdx !== -1) jobQueue.splice(queueIdx, 1);
+
+      // Kill active process if this is the running job
+      if (runningJobId === id) {
+        const proc = activeProc[id];
+        if (proc && proc.pid) { try { process.kill(proc.pid, "SIGTERM"); } catch {} }
+        runningJobId = null;
+      }
       if (fs.existsSync(jobDir)) {
         console.log(`SERVER: Removing directory ${jobDir}`);
         await fs.remove(jobDir);
@@ -315,6 +383,86 @@ async function startServer() {
         error: error.message || String(error),
         stack: error.stack
       });
+    }
+  });
+
+  // Pause: send SIGSTOP to the active ffmpeg process.
+  // The process is frozen in-place — no data loss, resumes exactly where it left off.
+  // Does not survive a server restart (SIGSTOP is kernel-level, not persisted).
+  // On server boot, paused jobs are treated as interrupted and resume via chunk skip.
+  app.post("/api/jobs/:id/pause", (req, res) => {
+    const { id } = req.params;
+    const job = jobs[id];
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "paused") return res.json({ status: "already paused" });
+    if (!["splitting", "reversing", "merging", "downloading"].includes(job.status)) {
+      return res.status(400).json({ error: `Cannot pause a job in status: ${job.status}` });
+    }
+    const proc = activeProc[id];
+    if (proc && proc.pid) {
+      try {
+        process.kill(proc.pid, "SIGSTOP");
+        log(id, `Job paused (SIGSTOP sent to PID ${proc.pid})`);
+      } catch (e: any) {
+        // Process may have already exited — treat as ok
+        log(id, `SIGSTOP failed (process may have exited): ${e.message}`);
+      }
+    }
+    job.pausedStatus = job.status;
+    job.status = "paused";
+    job.eta = null;
+    job.currentPhase = "Paused";
+    saveJob(job);
+    res.json({ success: true, pausedFrom: job.pausedStatus });
+  });
+
+  // Resume: send SIGCONT to unfreeze the process.
+  app.post("/api/jobs/:id/resume", (req, res) => {
+    const { id } = req.params;
+    const job = jobs[id];
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status !== "paused") return res.status(400).json({ error: `Job is not paused (status: ${job.status})` });
+    const proc = activeProc[id];
+    if (proc && proc.pid) {
+      try {
+        process.kill(proc.pid, "SIGCONT");
+        log(id, `Job resumed (SIGCONT sent to PID ${proc.pid})`);
+        job.status = (job.pausedStatus as Job["status"]) || "reversing";
+        job.pausedStatus = null;
+        job.currentPhase = null;
+        saveJob(job);
+        res.json({ success: true, resumedTo: job.status });
+      } catch (e: any) {
+        // Process died while paused — restart from checkpoint
+        log(id, `Resume via SIGCONT failed, restarting from checkpoint: ${e.message}`);
+        job.status = "pending";
+        job.pausedStatus = null;
+        jobs[id] = job;
+        saveJob(job);
+        runJob(id);
+        res.json({ success: true, resumedVia: "restart" });
+      }
+    } else {
+      // No active process — restart from checkpoint (chunks already done will be skipped)
+      log(id, "No active process found, restarting from checkpoint...");
+      job.status = "pending";
+      job.pausedStatus = null;
+      jobs[id] = job;
+      saveJob(job);
+      runJob(id);
+      res.json({ success: true, resumedVia: "restart" });
+    }
+  });
+
+  // Job history — last 50 completed/failed jobs
+  app.get("/api/jobs/history", (req, res) => {
+    try {
+      const rows = db.prepare(
+        "SELECT id, url, status, outputFile, created_at, finished_at FROM history ORDER BY finished_at DESC LIMIT 50"
+      ).all();
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 
@@ -522,14 +670,25 @@ async function startServer() {
 
 async function autoResumeJobs() {
   console.log("[RECOVERY] Scanning for interrupted jobs...");
-  const interruptedJobs = db.prepare("SELECT id FROM jobs WHERE status NOT IN ('completed', 'failed')").all() as { id: string }[];
+  // Exclude paused — SIGSTOP does not survive restarts, so paused jobs
+  // will be restarted from checkpoint when the user clicks Resume.
+  // Exclude completed and failed as always.
+  const interruptedJobs = db.prepare(
+    "SELECT id FROM jobs WHERE status NOT IN ('completed', 'failed', 'paused')"
+  ).all() as { id: string }[];
   
   for (const row of interruptedJobs) {
     const job = getJobFromDb(row.id);
     if (job) {
-      console.log(`[RECOVERY] Resuming Job: ${job.id}`);
+      console.log(`[RECOVERY] Queuing interrupted job: ${job.id}`);
       jobs[job.id] = job;
-      runJob(job.id);
+      // Use queue so multiple recovered jobs don't run simultaneously
+      if (!runningJobId) {
+        runningJobId = job.id;
+        runJob(job.id).finally(() => { runningJobId = null; processQueue(); });
+      } else {
+        jobQueue.push(job.id);
+      }
     }
   }
 }
@@ -604,16 +763,16 @@ async function runJob(jobId: string) {
       log(jobId, "Existing download found, skipping download step.");
       job.chunks.downloaded = true;
     } else if (job.sourceFile) {
-      // Local file reversal — symlink or copy into the job's download dir.
-      // Copy (not symlink) so the pipeline is self-contained and the original is safe.
       log(jobId, `Using local source file: ${job.sourceFile}`);
       job.status = "downloading";
+      job.progress = 2;
       saveJob(job);
       await fs.copy(job.sourceFile, downloadPath);
       log(jobId, `Local file staged at ${downloadPath} (${((await fs.stat(downloadPath)).size / 1024 / 1024).toFixed(1)}MB)`);
       job.chunks.downloaded = true;
     } else {
       job.status = "downloading";
+      job.progress = 2;
       saveJob(job);
       log(jobId, `Starting download from ${job.url}`);
       
@@ -646,7 +805,7 @@ async function runJob(jobId: string) {
       log(jobId, "Download complete");
       job.chunks.downloaded = true;
     }
-    job.progress = 25;
+    job.progress = 5;
     saveJob(job);
 
     // 2. Split
@@ -658,9 +817,11 @@ async function runJob(jobId: string) {
       job.status = "splitting";
       saveJob(job);
       log(jobId, "Splitting video into 60s chunks (re-encoding for stability)...");
-      
-      // Re-encoding during split ensures keyframes are at the start of each segment.
-      // -preset/-tune/-crf are libx264-only; libopenh264 ignores or errors on them.
+
+      // Get duration upfront so we can compute split progress as time/duration
+      const splitDurationSec = await getVideoDuration(downloadPath);
+      log(jobId, `Source duration: ${splitDurationSec > 0 ? (splitDurationSec / 60).toFixed(1) + " min" : "unknown"}`);
+
       await runCommand("ffmpeg", [
         "-y", "-i", downloadPath,
         "-c:v", encoder,
@@ -672,13 +833,27 @@ async function runJob(jobId: string) {
         "-segment_time", "60",
         "-reset_timestamps", "1",
         path.join(chunksDir, "part_%05d.mp4")
-      ], (msg) => log(jobId, msg), "SPLIT");
+      ], (msg) => log(jobId, msg), "SPLIT", (p) => {
+        // Split occupies 5→38% of total progress
+        const pct = splitDurationSec > 0 ? Math.min(p.timeSec / splitDurationSec, 1) : 0;
+        job.progress = 5 + pct * 33;
+        const remaining = p.speed > 0 && splitDurationSec > 0
+          ? (splitDurationSec - p.timeSec) / p.speed
+          : 0;
+        const timeStr = `${Math.floor(p.timeSec / 60)}m ${Math.floor(p.timeSec % 60)}s`;
+        const totalStr = splitDurationSec > 0 ? `${Math.floor(splitDurationSec / 60)}m ${Math.floor(splitDurationSec % 60)}s` : "?";
+        job.eta = remaining > 0 ? formatEta(remaining) : null;
+        job.currentPhase = `Splitting: ${timeStr} / ${totalStr} (${p.speed.toFixed(1)}x)`;
+        saveJob(job);
+      }, jobId);
 
       log(jobId, "Splitting complete");
       const newChunks = (await fs.readdir(chunksDir)).filter(f => f.endsWith(".mp4"));
       job.chunks.total = newChunks.length;
     }
-    job.progress = 40;
+    job.progress = 38;
+    job.eta = null;
+    job.currentPhase = null;
     saveJob(job);
 
     // 3. Reverse
@@ -700,13 +875,16 @@ async function runJob(jobId: string) {
         if (!job.chunks.completed.includes(chunk)) {
           job.chunks.completed.push(chunk);
         }
-        job.progress = 40 + ((i + 1) / totalChunks) * 50;
+        job.progress = 38 + ((i + 1) / totalChunks) * 54;
         saveJob(job);
         continue;
       }
       
       log(jobId, `Reversing chunk ${i + 1}/${totalChunks}: ${chunk} using ${encoder}...`);
-      
+
+      // Get chunk duration for per-chunk progress within the reversal phase
+      const chunkDurSec = await getVideoDuration(inputPath);
+
       await runCommand("ffmpeg", [
         "-y", "-i", inputPath,
         "-vf", "reverse",
@@ -718,17 +896,30 @@ async function runJob(jobId: string) {
         "-threads", "1",
         "-movflags", "+faststart",
         outputPath
-      ], (msg) => log(jobId, msg), `REVERSE ${i + 1}/${totalChunks}`);
+      ], (msg) => log(jobId, msg), `REVERSE ${i + 1}/${totalChunks}`, (p) => {
+        // Reversal occupies 38→92% across all chunks
+        const chunkBase = 38 + (i / totalChunks) * 54;
+        const chunkPct  = chunkDurSec > 0 ? Math.min(p.timeSec / chunkDurSec, 1) : (i / totalChunks);
+        job.progress    = chunkBase + chunkPct * (54 / totalChunks);
+        const remaining = p.speed > 0 && chunkDurSec > 0
+          ? (chunkDurSec - p.timeSec) / p.speed
+          : 0;
+        job.eta = remaining > 0 ? formatEta(remaining) : null;
+        job.currentPhase = `Reversing chunk ${i + 1}/${totalChunks} (${p.speed.toFixed(1)}x)`;
+        saveJob(job);
+      }, jobId);
       
       if (!job.chunks.completed.includes(chunk)) {
         job.chunks.completed.push(chunk);
       }
       
-      job.progress = 40 + ((i + 1) / totalChunks) * 50;
+      job.progress = 38 + ((i + 1) / totalChunks) * 54;
       saveJob(job);
     }
 
     log(jobId, "Reversal complete");
+    job.eta = null;
+    job.currentPhase = null;
 
     // 4. Merge
     const finalOutputPath = path.join(jobDir, "reversed_final.mp4");
@@ -741,8 +932,9 @@ async function runJob(jobId: string) {
     const listContent = reversedFiles.map(f => `file '${path.join(reversedDir, f)}'`).join("\n");
     await fs.writeFile(listFilePath, listContent);
 
-    // Re-encode during merge to ensure absolute browser compatibility.
-    // libopenh264 produces H.264 Main Profile by default — fully browser-compatible.
+    // Get merge input duration for progress
+    const mergeDurationSec = await getVideoDuration(downloadPath);
+
     log(jobId, `Starting final merge with ${encoder} re-encoding...`);
     await runCommand("ffmpeg", [
       "-y", "-f", "concat", "-safe", "0", "-i", listFilePath,
@@ -756,7 +948,17 @@ async function runJob(jobId: string) {
       "-movflags", "+faststart",
       "-f", "mp4",
       finalOutputPath
-    ], (msg) => log(jobId, msg), "MERGE");
+    ], (msg) => log(jobId, msg), "MERGE", (p) => {
+      // Merge occupies 92→99%
+      const pct = mergeDurationSec > 0 ? Math.min(p.timeSec / mergeDurationSec, 1) : 0;
+      job.progress = 92 + pct * 7;
+      const remaining = p.speed > 0 && mergeDurationSec > 0
+        ? (mergeDurationSec - p.timeSec) / p.speed
+        : 0;
+      job.eta = remaining > 0 ? formatEta(remaining) : null;
+      job.currentPhase = `Merging: ${(pct * 100).toFixed(0)}% (${p.speed.toFixed(1)}x)`;
+      saveJob(job);
+    }, jobId);
 
     log(jobId, "Merging complete. Master file ready.");
     await fs.remove(listFilePath);
@@ -774,20 +976,78 @@ async function runJob(jobId: string) {
   }
 }
 
-// phase: label prepended to every output line — e.g. "[SPLIT]", "[REVERSE 1/2]", "[MERGE]"
-// All stdout and stderr lines are forwarded to onLog with no filtering.
-// Previously the reversal loop only logged lines containing "Error" — all ffmpeg
-// progress lines were silently dropped, making it impossible to diagnose failures.
-function runCommand(command: string, args: string[], onLog: (msg: string) => void, phase = ""): Promise<void> {
+// Parse ffmpeg's time= field from progress lines into total seconds
+function parseFFmpegTime(timeStr: string): number {
+  const m = timeStr.match(/(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  if (!m) return 0;
+  return parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3]);
+}
+
+// Format seconds into "Xm Ys" string
+function formatEta(seconds: number): string {
+  if (seconds <= 0 || !isFinite(seconds)) return "";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return m > 0 ? `~${m}m ${s}s remaining` : `~${s}s remaining`;
+}
+
+// Get video duration in seconds via ffprobe
+async function getVideoDuration(filePath: string): Promise<number> {
+  try {
+    const out = await runCommandCapture(
+      `ffprobe -v error -show_entries format=duration -of csv=p=0 "${filePath}"`,
+      true
+    );
+    const n = parseFloat(out.trim());
+    return isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+interface FFmpegProgress {
+  timeSec: number;  // current position in seconds
+  speed: number;    // encoding speed multiplier (e.g. 2.0 = 2x realtime)
+  fps: number;
+}
+
+// phase: label prepended to every output line
+// onProgress: called with parsed ffmpeg progress on every progress line
+// All stdout and stderr lines forwarded to onLog — no silent filtering.
+function runCommand(
+  command: string,
+  args: string[],
+  onLog: (msg: string) => void,
+  phase = "",
+  onProgress?: (p: FFmpegProgress) => void,
+  jobId?: string  // if provided, registers proc in activeProc for pause/resume
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args);
     const prefix = phase ? `[${phase}] ` : "";
 
+    // Register so pause/resume can find this process
+    if (jobId) activeProc[jobId] = proc;
+
     const handleData = (data: Buffer) => {
-      // ffmpeg emits multiple lines in one data event — split and emit each
       data.toString().split("\n").forEach(line => {
         const trimmed = line.trim();
-        if (trimmed) onLog(`${prefix}${trimmed}`);
+        if (!trimmed) return;
+
+        if (trimmed.startsWith("frame=") && onProgress) {
+          const timeMatch  = trimmed.match(/time=(\d+:\d+:\d+(?:\.\d+)?)/);
+          const speedMatch = trimmed.match(/speed=\s*([\d.]+)x/);
+          const fpsMatch   = trimmed.match(/fps=\s*([\d.]+)/);
+          if (timeMatch) {
+            onProgress({
+              timeSec: parseFFmpegTime(timeMatch[1]),
+              speed:   speedMatch ? parseFloat(speedMatch[1]) : 0,
+              fps:     fpsMatch   ? parseFloat(fpsMatch[1])   : 0,
+            });
+          }
+        }
+
+        onLog(`${prefix}${trimmed}`);
       });
     };
 
@@ -795,19 +1055,13 @@ function runCommand(command: string, args: string[], onLog: (msg: string) => voi
     proc.stderr.on("data", handleData);
 
     proc.on("close", (code) => {
-      if (code === 0) {
-        onLog(`${prefix}exited cleanly (code 0)`);
-        resolve();
-      } else {
-        const err = new Error(`${command} exited with code ${code}`);
-        onLog(`${prefix}ERROR: exited with code ${code}`);
-        reject(err);
-      }
+      if (jobId && activeProc[jobId] === proc) activeProc[jobId] = null;
+      if (code === 0) { onLog(`${prefix}exited cleanly (code 0)`); resolve(); }
+      else { onLog(`${prefix}ERROR: exited with code ${code}`); reject(new Error(`${command} exited with code ${code}`)); }
     });
-
     proc.on("error", (err) => {
-      onLog(`${prefix}SPAWN ERROR: ${err.message}`);
-      reject(err);
+      if (jobId && activeProc[jobId] === proc) activeProc[jobId] = null;
+      onLog(`${prefix}SPAWN ERROR: ${err.message}`); reject(err);
     });
   });
 }
