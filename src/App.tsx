@@ -1,21 +1,26 @@
-// PATH: src/App.tsx
-// v1.3 — Unified layout. Player is the hero. Any loaded file can be reversed.
+// PATH: src/App.tsx  v1.4
+// Layout: three-panel workstation — left browser | center stage | right pipeline
+// Design: IBM Plex Mono, amber accent, deep charcoal, razor panel borders
+// New: CSS transform flip/mirror controls (zero server cost, instant, lossless)
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Play, Download, AlertCircle, CheckCircle2, Loader2,
-  Terminal as TerminalIcon, Video, ArrowLeftRight,
-  ChevronRight, Folder, Trash2, PlayCircle, RefreshCw,
-  Link2, HardDrive,
+  ArrowLeftRight, ChevronRight, Folder, Trash2, PlayCircle,
+  RefreshCw, Link2, HardDrive, FlipHorizontal, FlipVertical,
+  RotateCcw, Maximize2, Terminal,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
+// ── Types ────────────────────────────────────────────────────────────────────
 interface Job {
   id: string;
   url: string;
   sourceFile?: string | null;
   status: "pending" | "downloading" | "splitting" | "reversing" | "merging" | "completed" | "failed";
   progress: number;
+  eta?: string | null;
+  currentPhase?: string | null;
   logs: string[];
   outputFile?: string;
   error?: string;
@@ -29,63 +34,105 @@ interface BrowseData {
   files: { name: string; size: number; mtime: string; path: string }[];
 }
 
-const IS_VIDEO = (name: string) => /\.(mp4|webm|mkv|mov|avi|m4v)$/i.test(name);
+interface Transform {
+  flipH: boolean;
+  flipV: boolean;
+  rot180: boolean;
+}
 
+const IS_VIDEO = (n: string) => /\.(mp4|webm|mkv|mov|avi|m4v)$/i.test(n);
+
+const STATUS_COLOR: Record<string, string> = {
+  completed: "#f59e0b",
+  failed:    "#ef4444",
+  pending:   "#6b7280",
+  default:   "#60a5fa",
+};
+
+function statusColor(s: string) {
+  return STATUS_COLOR[s] ?? STATUS_COLOR.default;
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
 export default function App() {
-  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
-  const [job, setJob] = useState<Job | null>(null);
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const [playbackError, setPlaybackError] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [youtubeUrl, setYoutubeUrl] = useState("");
-  const [activeTab, setActiveTab] = useState<"url" | "browser">("browser");
-  const [systemHealth, setSystemHealth] = useState<{
-    load: number; psi: number;
-    disk: { available: number; total: number }; zombies: number;
-  } | null>(null);
-  const [hasUpdate, setHasUpdate] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false);
-  const [browserData, setBrowserData] = useState<BrowseData | null>(null);
-  const [browserPath, setBrowserPath] = useState<string | null>(null);
-  const [browserLoading, setBrowserLoading] = useState(false);
-  const logEndRef = useRef<HTMLDivElement>(null);
+  // core
+  const [currentJobId, setCurrentJobId]     = useState<string | null>(null);
+  const [job, setJob]                        = useState<Job | null>(null);
+  const [selectedFile, setSelectedFile]     = useState<string | null>(null);
+  const [playbackError, setPlaybackError]   = useState(false);
+  const [isSubmitting, setIsSubmitting]     = useState(false);
+  const [isDeleting, setIsDeleting]         = useState(false);
+  const [deleteError, setDeleteError]       = useState<string | null>(null);
 
-  // Stable player src — only recomputes when file actually changes, not on every poll
-  const cacheBustRef = useRef<number>(Date.now());
-  const prevSourceKeyRef = useRef<string>("");
+  // input
+  const [youtubeUrl, setYoutubeUrl]         = useState("");
+  const [activeTab, setActiveTab]           = useState<"browser" | "url">("browser");
+
+  // system
+  const [health, setHealth]                 = useState<{ load: number; psi: number; disk: { available: number } } | null>(null);
+  const [hasUpdate, setHasUpdate]           = useState(false);
+
+  // browser
+  const [browserData, setBrowserData]       = useState<BrowseData | null>(null);
+  const [browserPath, setBrowserPath]       = useState<string | null>(null);
+  const [browserLoading, setBrowserLoading] = useState(false);
+
+  // player transform (CSS only — zero cost)
+  const [xform, setXform]                   = useState<Transform>({ flipH: false, flipV: false, rot180: false });
+
+  // logs panel toggle
+  const [logsOpen, setLogsOpen]             = useState(true);
+
+  const logEndRef   = useRef<HTMLDivElement>(null);
+  const cacheBust   = useRef(Date.now());
+  const prevSrcKey  = useRef("");
+
+  // ── Stable player src ────────────────────────────────────────────────────
   const playerSrc = useMemo(() => {
-    const key = selectedFilePath || job?.outputFile || "";
-    if (key !== prevSourceKeyRef.current) {
-      cacheBustRef.current = Date.now();
-      prevSourceKeyRef.current = key;
+    const key = selectedFile || job?.outputFile || "";
+    if (key !== prevSrcKey.current) {
+      cacheBust.current = Date.now();
+      prevSrcKey.current = key;
     }
     if (!key) return null;
     if (key.startsWith("http")) return key;
-    return `/api/media?path=${encodeURIComponent(key)}&t=${cacheBustRef.current}`;
-  }, [selectedFilePath, job?.outputFile]);
+    return `/api/media?path=${encodeURIComponent(key)}&t=${cacheBust.current}`;
+  }, [selectedFile, job?.outputFile]);
 
-  const playerFilename = (selectedFilePath || job?.outputFile || "").split("/").pop() || null;
+  const playerFilename = (selectedFile || job?.outputFile || "").split("/").pop() || null;
 
-  const browseTo = useCallback(async (targetPath: string) => {
+  // CSS transform string from state
+  const cssTransform = useMemo(() => {
+    const parts: string[] = [];
+    if (xform.rot180) parts.push("rotate(180deg)");
+    if (xform.flipH)  parts.push("scaleX(-1)");
+    if (xform.flipV)  parts.push("scaleY(-1)");
+    return parts.join(" ") || "none";
+  }, [xform]);
+
+  // ── Browse ───────────────────────────────────────────────────────────────
+  const browseTo = useCallback(async (p: string) => {
     setBrowserLoading(true);
     try {
-      const res = await fetch(`/api/browse?path=${encodeURIComponent(targetPath)}`);
-      if (res.ok) {
-        const data: BrowseData = await res.json();
-        setBrowserData(data);
-        setBrowserPath(data.path);
-      }
-    } catch (e) { console.error("Browse error", e); }
+      const r = await fetch(`/api/browse?path=${encodeURIComponent(p)}`);
+      if (r.ok) { const d = await r.json(); setBrowserData(d); setBrowserPath(d.path); }
+    } catch {}
     finally { setBrowserLoading(false); }
   }, []);
 
+  // ── Init ─────────────────────────────────────────────────────────────────
   useEffect(() => {
-    fetch("/api/jobs/active").then(r => r.ok ? r.json() : null).then(data => {
-      if (data) { setCurrentJobId(data.id); setJob(data); }
-    }).catch(() => {});
+    fetch("/api/jobs/active").then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) { setCurrentJobId(d.id); setJob(d); } }).catch(() => {});
     browseTo("/home/owner/Documents");
+  }, []);
+
+  // ── Polls ────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const t = setInterval(() =>
+      fetch("/api/system/health").then(r => r.ok ? r.json() : null)
+        .then(d => d && setHealth(d)).catch(() => {}), 5000);
+    return () => clearInterval(t);
   }, []);
 
   useEffect(() => {
@@ -97,20 +144,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const poll = () => fetch("/api/system/health")
-      .then(r => r.ok ? r.json() : null).then(d => d && setSystemHealth(d)).catch(() => {});
-    poll();
-    const t = setInterval(poll, 5000);
-    return () => clearInterval(t);
-  }, []);
-
-  useEffect(() => {
     if (!currentJobId || job?.status === "completed" || job?.status === "failed") return;
     const t = setInterval(async () => {
       try {
-        const res = await fetch(`/api/jobs/${currentJobId}`);
-        if (res.ok) setJob(await res.json());
-        else if (res.status === 404) { setJob(null); setCurrentJobId(null); }
+        const r = await fetch(`/api/jobs/${currentJobId}`);
+        if (r.ok) setJob(await r.json());
+        else if (r.status === 404) { setJob(null); setCurrentJobId(null); }
       } catch {}
     }, 2000);
     return () => clearInterval(t);
@@ -119,361 +158,843 @@ export default function App() {
   useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [job?.logs]);
 
   useEffect(() => {
-    if (job?.status === "completed" && job.outputFile && !selectedFilePath) {
-      setSelectedFilePath(job.outputFile);
-    }
-    if (job?.status === "completed" && job.id) {
+    if (job?.status === "completed" && job.outputFile && !selectedFile) setSelectedFile(job.outputFile);
+    if (job?.status === "completed" && job.id)
       browseTo(`/home/owner/Documents/47911b4f-b8b8-4453-90c9-360918fbf53a/Pro-Video-Reverser/jobs/${job.id}`);
-    }
   }, [job?.status]);
 
-  useEffect(() => { setPlaybackError(false); }, [selectedFilePath, job?.outputFile]);
+  useEffect(() => { setPlaybackError(false); }, [selectedFile, job?.outputFile]);
 
+  // ── Actions ──────────────────────────────────────────────────────────────
   const startJob = async (opts: { url?: string; sourceFile?: string }) => {
     setIsSubmitting(true);
     try {
-      const res = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const r = await fetch("/api/jobs", {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(opts),
       });
-      if (res.ok) {
-        const { jobId } = await res.json();
-        setCurrentJobId(jobId);
-        setSelectedFilePath(null);
-        setJob({
-          id: jobId,
-          url: opts.url || opts.sourceFile || "",
-          sourceFile: opts.sourceFile || null,
-          status: "pending",
-          progress: 0,
-          logs: [opts.sourceFile ? `Reversing local file: ${opts.sourceFile}` : "Initializing..."],
-        });
+      if (r.ok) {
+        const { jobId } = await r.json();
+        setCurrentJobId(jobId); setSelectedFile(null);
+        setJob({ id: jobId, url: opts.url || opts.sourceFile || "",
+          sourceFile: opts.sourceFile || null, status: "pending", progress: 0,
+          logs: [opts.sourceFile ? `Queued: ${opts.sourceFile}` : "Initializing..."] });
       }
-    } catch (e) { console.error("Submit error", e); }
-    finally { setIsSubmitting(false); }
+    } catch {} finally { setIsSubmitting(false); }
   };
 
   const deleteJob = async () => {
     if (!job || isDeleting) return;
     setIsDeleting(true); setDeleteError(null);
     try {
-      const res = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
-      if (res.ok || res.status === 404) {
-        setJob(null); setCurrentJobId(null);
-        setSelectedFilePath(null); setPlaybackError(false);
-        localStorage.removeItem("currentJobId");
+      const r = await fetch(`/api/jobs/${job.id}`, { method: "DELETE" });
+      if (r.ok || r.status === 404) {
+        setJob(null); setCurrentJobId(null); setSelectedFile(null); setPlaybackError(false);
       } else {
-        const d = await res.json().catch(() => ({ error: `Status ${res.status}` }));
-        setDeleteError(`Delete failed: ${d.error}`);
+        const d = await r.json().catch(() => ({ error: `Status ${r.status}` }));
+        setDeleteError(d.error);
       }
-    } catch (e: any) { setDeleteError(`Network error: ${e.message}`); }
-    finally { setIsDeleting(false); }
+    } catch (e: any) { setDeleteError(e.message); } finally { setIsDeleting(false); }
   };
 
+  const toggleXform = (key: keyof Transform) =>
+    setXform(p => ({ ...p, [key]: !p[key] }));
+
+  const resetXform = () => setXform({ flipH: false, flipV: false, rot180: false });
+
   const jobActive = job && job.status !== "completed" && job.status !== "failed";
-  const canReverse = selectedFilePath && !selectedFilePath.startsWith("http") && !jobActive && !isSubmitting;
-  const statusColor = (s: string) =>
-    s === "completed" ? "text-emerald-400" : s === "failed" ? "text-rose-400" : "text-sky-400";
+  const canReverse = selectedFile && !selectedFile.startsWith("http") && !jobActive && !isSubmitting;
 
+  // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-[#e4e3e0] font-sans selection:bg-emerald-500/30">
+    <>
+      {/* Google Fonts — IBM Plex Mono + Syne */}
+      <style dangerouslySetInnerHTML={{ __html: `
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400&family=Syne:wght@400;500;600;700;800&display=swap');
 
-      {/* Slim header */}
-      <header className="border-b border-white/[0.06] px-6 py-3 flex items-center justify-between bg-black/60 backdrop-blur-xl sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-emerald-500 rounded flex items-center justify-center shadow-[0_0_16px_rgba(16,185,129,0.3)]">
-            <ArrowLeftRight className="text-black w-4 h-4" />
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+          --bg:        #0c0c0d;
+          --surface:   #111114;
+          --surface2:  #16161a;
+          --border:    rgba(255,255,255,0.06);
+          --border2:   rgba(255,255,255,0.10);
+          --amber:     #f59e0b;
+          --amber-dim: rgba(245,158,11,0.15);
+          --red:       #ef4444;
+          --blue:      #60a5fa;
+          --text:      rgba(255,255,255,0.85);
+          --text-mid:  rgba(255,255,255,0.45);
+          --text-dim:  rgba(255,255,255,0.18);
+          --mono:      'IBM Plex Mono', monospace;
+          --sans:      'Syne', sans-serif;
+          --radius:    6px;
+          --panel:     1px solid var(--border);
+        }
+
+        html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
+
+        /* scrollbars */
+        ::-webkit-scrollbar { width: 3px; height: 3px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 10px; }
+
+        /* workstation grid */
+        .workstation {
+          display: grid;
+          grid-template-rows: 36px 1fr;
+          grid-template-columns: 280px 1fr 320px;
+          height: 100vh;
+          overflow: hidden;
+        }
+
+        /* topbar spans full width */
+        .topbar {
+          grid-column: 1 / -1;
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          padding: 0 16px;
+          border-bottom: var(--panel);
+          background: rgba(12,12,13,0.9);
+          backdrop-filter: blur(12px);
+          position: relative;
+          z-index: 10;
+        }
+
+        .panel {
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+          border-right: var(--panel);
+        }
+        .panel-center { border-right: none; background: #0a0a0b; }
+        .panel-right  { border-left: var(--panel); border-right: none; }
+
+        .panel-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0 12px;
+          height: 32px;
+          border-bottom: var(--panel);
+          flex-shrink: 0;
+          background: var(--surface);
+        }
+
+        .panel-label {
+          font-family: var(--mono);
+          font-size: 9px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: var(--text-dim);
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .panel-scroll {
+          overflow-y: auto;
+          flex: 1;
+          min-height: 0;
+        }
+
+        /* breadcrumb */
+        .breadcrumb {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          padding: 6px 12px;
+          border-bottom: var(--panel);
+          overflow-x: auto;
+          flex-shrink: 0;
+          background: var(--surface);
+        }
+
+        .bc-seg {
+          font-family: var(--mono);
+          font-size: 9px;
+          color: var(--text-dim);
+          padding: 2px 4px;
+          border-radius: 3px;
+          white-space: nowrap;
+          background: none;
+          border: none;
+          cursor: pointer;
+          transition: color 0.15s;
+        }
+        .bc-seg:hover { color: var(--amber); }
+        .bc-seg.active { color: var(--amber); cursor: default; }
+        .bc-sep { font-family: var(--mono); font-size: 9px; color: var(--text-dim); opacity: 0.3; }
+
+        /* file browser rows */
+        .fb-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 7px 12px;
+          border-bottom: 1px solid rgba(255,255,255,0.02);
+          cursor: pointer;
+          transition: background 0.1s;
+        }
+        .fb-row:hover { background: rgba(255,255,255,0.03); }
+        .fb-row.active {
+          background: var(--amber-dim);
+          border-left: 2px solid var(--amber);
+          padding-left: 10px;
+        }
+        .fb-name {
+          font-family: var(--mono);
+          font-size: 10px;
+          color: var(--text-mid);
+          flex: 1;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          transition: color 0.15s;
+        }
+        .fb-name.video:hover { color: var(--text); }
+        .fb-name.active { color: var(--amber); }
+        .fb-name.dim { color: var(--text-dim); cursor: default; }
+        .fb-size {
+          font-family: var(--mono);
+          font-size: 8px;
+          color: var(--text-dim);
+          width: 46px;
+          text-align: right;
+          flex-shrink: 0;
+        }
+
+        /* stage / player */
+        .stage {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          background: #070708;
+        }
+        .stage-screen {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: #000;
+          position: relative;
+          overflow: hidden;
+        }
+        .stage-screen video {
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+          transition: transform 0.2s cubic-bezier(0.4,0,0.2,1);
+        }
+        .stage-controls {
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          border-top: var(--panel);
+          background: var(--surface);
+          flex-wrap: wrap;
+        }
+
+        /* transform toggle buttons */
+        .xbtn {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          padding: 4px 8px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid var(--border2);
+          border-radius: var(--radius);
+          font-family: var(--mono);
+          font-size: 9px;
+          color: var(--text-mid);
+          cursor: pointer;
+          transition: all 0.15s;
+          white-space: nowrap;
+        }
+        .xbtn:hover { border-color: rgba(255,255,255,0.2); color: var(--text); }
+        .xbtn.on {
+          background: var(--amber-dim);
+          border-color: var(--amber);
+          color: var(--amber);
+        }
+        .xbtn-sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; flex-shrink: 0; }
+
+        /* reverse action button */
+        .reverse-btn {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 5px 14px;
+          background: var(--amber);
+          border: none;
+          border-radius: var(--radius);
+          font-family: var(--mono);
+          font-size: 9px;
+          font-weight: 600;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: #000;
+          cursor: pointer;
+          transition: all 0.15s;
+          white-space: nowrap;
+        }
+        .reverse-btn:hover:not(:disabled) { background: #fbbf24; }
+        .reverse-btn:disabled {
+          background: rgba(255,255,255,0.06);
+          color: var(--text-dim);
+          cursor: not-allowed;
+        }
+
+        /* right panel sections */
+        .rp-section {
+          border-bottom: var(--panel);
+          flex-shrink: 0;
+        }
+        .rp-section-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 8px 12px;
+          cursor: pointer;
+          user-select: none;
+        }
+        .rp-section-header:hover { background: rgba(255,255,255,0.02); }
+
+        /* progress bar */
+        .progress-track {
+          height: 2px;
+          background: rgba(255,255,255,0.06);
+          border-radius: 2px;
+          overflow: hidden;
+          margin: 0 12px 10px;
+        }
+        .progress-fill {
+          height: 100%;
+          border-radius: 2px;
+          transition: width 0.6s ease;
+        }
+
+        /* chunk dots */
+        .chunk-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 2px;
+          cursor: pointer;
+          transition: all 0.3s;
+          flex-shrink: 0;
+        }
+
+        /* log lines */
+        .log-line {
+          display: flex;
+          gap: 8px;
+          padding: 2px 12px;
+          font-family: var(--mono);
+          font-size: 9px;
+          line-height: 1.6;
+          color: var(--text-dim);
+          transition: color 0.1s;
+          border-left: 2px solid transparent;
+        }
+        .log-line:hover { color: var(--text-mid); }
+        .log-line .ln { color: rgba(255,255,255,0.1); width: 24px; text-align: right; flex-shrink: 0; user-select: none; }
+
+        /* input */
+        .url-input {
+          width: 100%;
+          background: rgba(255,255,255,0.03);
+          border: 1px solid var(--border2);
+          border-radius: var(--radius);
+          padding: 8px 10px;
+          font-family: var(--mono);
+          font-size: 10px;
+          color: var(--text);
+          outline: none;
+          transition: border-color 0.15s;
+        }
+        .url-input:focus { border-color: rgba(245,158,11,0.4); }
+        .url-input::placeholder { color: var(--text-dim); }
+
+        /* tab strip */
+        .tab-strip { display: flex; border-bottom: var(--panel); flex-shrink: 0; }
+        .tab {
+          flex: 1; padding: 8px 0;
+          font-family: var(--mono); font-size: 9px;
+          letter-spacing: 0.1em; text-transform: uppercase;
+          color: var(--text-dim);
+          background: none; border: none; border-bottom: 2px solid transparent;
+          cursor: pointer; transition: all 0.15s;
+          display: flex; align-items: center; justify-content: center; gap: 5px;
+        }
+        .tab:hover { color: var(--text-mid); }
+        .tab.active { color: var(--amber); border-bottom-color: var(--amber); }
+
+        /* icon buttons */
+        .icon-btn {
+          display: flex; align-items: center; justify-content: center;
+          width: 22px; height: 22px;
+          background: none; border: none;
+          color: var(--text-dim); cursor: pointer;
+          border-radius: 4px; transition: all 0.15s;
+        }
+        .icon-btn:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+
+        /* empty state */
+        .empty {
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          height: 100%; gap: 10px; color: var(--text-dim);
+          font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+          text-transform: uppercase; text-align: center;
+          pointer-events: none; user-select: none;
+        }
+
+        /* status dot */
+        .status-dot {
+          width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+        }
+        .pulse { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+        /* delete btn */
+        .del-btn {
+          display: flex; align-items: center; gap: 4px;
+          padding: 3px 8px;
+          background: rgba(239,68,68,0.08);
+          border: 1px solid rgba(239,68,68,0.2);
+          border-radius: var(--radius);
+          font-family: var(--mono); font-size: 9px;
+          color: #ef4444; cursor: pointer;
+          transition: all 0.15s; white-space: nowrap;
+        }
+        .del-btn:hover:not(:disabled) { background: rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.4); }
+        .del-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* update pill */
+        .update-pill {
+          padding: 2px 8px;
+          background: var(--amber-dim);
+          border: 1px solid rgba(245,158,11,0.3);
+          border-radius: 12px;
+          font-family: var(--mono); font-size: 8px;
+          color: var(--amber); cursor: pointer;
+          transition: all 0.15s;
+        }
+        .update-pill:hover { background: rgba(245,158,11,0.25); }
+      `}} />
+
+      <div className="workstation">
+
+        {/* ── Topbar ── */}
+        <div className="topbar">
+          {/* Logo */}
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginRight:8 }}>
+            <div style={{
+              width:22, height:22, background:"var(--amber)", borderRadius:4,
+              display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0,
+            }}>
+              <ArrowLeftRight size={12} color="#000" />
+            </div>
+            <span style={{ fontFamily:"var(--sans)", fontSize:12, fontWeight:700, letterSpacing:"0.05em", textTransform:"uppercase" }}>
+              Pro Reverser
+            </span>
+            <span style={{ fontFamily:"var(--mono)", fontSize:8, color:"var(--text-dim)", letterSpacing:"0.15em" }}>v1.4</span>
           </div>
-          <span className="text-sm font-bold tracking-tight uppercase italic font-serif">Pro Video Reverser</span>
-          <span className="text-[9px] uppercase tracking-[0.2em] text-white/20 font-mono hidden md:block">v1.3</span>
-        </div>
-        <div className="flex items-center gap-5 font-mono text-[9px] uppercase tracking-widest">
-          {systemHealth && (
+
+          {/* divider */}
+          <div style={{ width:1, height:16, background:"var(--border)", flexShrink:0 }} />
+
+          {/* Health */}
+          {health && (
             <>
-              <span className={systemHealth.load < 4 ? "text-emerald-500/70" : "text-amber-400"}>LOAD {systemHealth.load.toFixed(1)}</span>
-              <span className={systemHealth.psi < 10 ? "text-emerald-500/70" : "text-rose-400"}>PSI {systemHealth.psi.toFixed(0)}%</span>
-              <span className={systemHealth.disk.available > 1024 ? "text-emerald-500/70" : "text-amber-400"}>{(systemHealth.disk.available / 1024).toFixed(0)}GB FREE</span>
+              <span style={{ fontFamily:"var(--mono)", fontSize:9, color: health.load < 4 ? "var(--amber)" : "#ef4444", letterSpacing:"0.1em" }}>
+                LOAD {health.load.toFixed(1)}
+              </span>
+              <span style={{ fontFamily:"var(--mono)", fontSize:9, color: health.psi < 10 ? "var(--text-dim)" : "#ef4444", letterSpacing:"0.1em" }}>
+                PSI {health.psi.toFixed(0)}%
+              </span>
+              <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)", letterSpacing:"0.1em" }}>
+                {(health.disk.available / 1024).toFixed(0)}GB FREE
+              </span>
             </>
           )}
+
+          <div style={{ flex:1 }} />
+
           {hasUpdate && (
-            <button onClick={() => { setIsUpdating(true); fetch("/api/system/update-apply", { method: "POST" }).then(() => window.location.reload()); }}
-              className="text-emerald-400 border border-emerald-500/30 px-2 py-1 rounded hover:bg-emerald-500/10 transition-colors">
-              {isUpdating ? "Updating..." : "Update ↑"}
+            <button className="update-pill"
+              onClick={() => fetch("/api/system/update-apply", { method:"POST" }).then(() => window.location.reload())}>
+              Update available ↑
             </button>
           )}
         </div>
-      </header>
 
-      <main className="max-w-7xl mx-auto p-4 md:p-6 space-y-4">
-
-        {/* Hero: Player */}
-        <div className="bg-[#0f0f0f] border border-white/[0.06] rounded-xl overflow-hidden shadow-2xl">
-          <div className="px-4 py-2.5 border-b border-white/[0.04] flex items-center justify-between bg-black/20">
-            <div className="flex items-center gap-2 text-[9px] font-mono text-white/25 uppercase tracking-widest">
-              <Video className="w-3 h-3" />
-              <span>Player</span>
-              {playerFilename && <span className="text-emerald-400/60 ml-1 normal-case tracking-normal truncate max-w-xs">{playerFilename}</span>}
-            </div>
-            <div className="flex items-center gap-4">
-              {playerSrc && <button onClick={() => { const p = selectedFilePath || job?.outputFile; if (p) navigator.clipboard.writeText(`${window.location.origin}/api/media?path=${encodeURIComponent(p)}`); }} className="text-[9px] font-mono text-white/15 hover:text-white/40 transition-colors uppercase tracking-widest">Copy URL</button>}
-              {playerSrc && <button onClick={() => setSelectedFilePath(null)} className="text-[9px] font-mono text-white/15 hover:text-rose-400 transition-colors uppercase tracking-widest">Clear</button>}
-            </div>
-          </div>
-
-          <div className="aspect-video bg-black relative">
-            {playerSrc ? (
-              <>
-                <video key={playerSrc} controls playsInline autoPlay className="w-full h-full" preload="auto"
-                  onCanPlay={() => setPlaybackError(false)} onError={() => setPlaybackError(true)}>
-                  <source src={playerSrc} type="video/mp4" />
-                </video>
-                {playbackError && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/95 p-8 text-center z-10">
-                    <AlertCircle className="w-8 h-8 text-rose-500 mb-3" />
-                    <p className="text-xs font-mono text-white/40">Playback failed — incompatible format</p>
-                    <p className="text-[10px] font-mono text-rose-400/70 mt-1">Delete job &amp; reset, then re-run</p>
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-white/[0.06]">
-                <Play className="w-16 h-16 mb-2" />
-                <p className="text-[10px] font-mono uppercase tracking-widest text-white/15">Browse a file below to play it</p>
-              </div>
-            )}
-          </div>
-
-          {/* Reverse action bar */}
-          <div className="px-4 py-3 border-t border-white/[0.04] bg-black/30 flex items-center gap-3">
-            <button
-              onClick={() => selectedFilePath && startJob({ sourceFile: selectedFilePath })}
-              disabled={!canReverse}
-              className="flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 disabled:bg-white/[0.04] disabled:text-white/15 text-black font-bold text-[10px] uppercase tracking-widest rounded-lg transition-all shadow-[0_0_20px_rgba(16,185,129,0.15)] disabled:shadow-none"
-            >
-              {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ArrowLeftRight className="w-3.5 h-3.5" />}
-              {isSubmitting ? "Starting..." : "Reverse This Clip"}
+        {/* ── LEFT PANEL: File Browser ── */}
+        <div className="panel">
+          {/* Tab strip: Browser / URL */}
+          <div className="tab-strip">
+            <button className={`tab ${activeTab === "browser" ? "active" : ""}`} onClick={() => setActiveTab("browser")}>
+              <HardDrive size={10} /> Files
             </button>
-            <span className="text-[9px] font-mono text-white/20">
-              {!playerSrc ? "Load a local file to reverse it" :
-               selectedFilePath?.startsWith("http") ? "Remote URLs: use YouTube input below" :
-               jobActive ? "Job in progress..." :
-               playerFilename}
-            </span>
-          </div>
-        </div>
-
-        {/* Two-column: controls + browser */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-
-          {/* Left: input + job status */}
-          <div className="lg:col-span-5 space-y-4">
-
-            {/* Tab: URL / Local */}
-            <div className="bg-[#0f0f0f] border border-white/[0.06] rounded-xl overflow-hidden">
-              <div className="flex border-b border-white/[0.04]">
-                {(["browser", "url"] as const).map(tab => (
-                  <button key={tab} onClick={() => setActiveTab(tab)}
-                    className={`flex-1 py-2.5 text-[9px] font-mono uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 ${activeTab === tab ? "text-emerald-400 bg-emerald-500/[0.06] border-b border-emerald-500" : "text-white/25 hover:text-white/45"}`}>
-                    {tab === "url" ? <Link2 className="w-3 h-3" /> : <HardDrive className="w-3 h-3" />}
-                    {tab === "url" ? "YouTube URL" : "Local File"}
-                  </button>
-                ))}
-              </div>
-              <div className="p-4">
-                {activeTab === "url" ? (
-                  <form onSubmit={e => { e.preventDefault(); if (youtubeUrl) startJob({ url: youtubeUrl }); }} className="space-y-3">
-                    <input type="text" value={youtubeUrl} onChange={e => setYoutubeUrl(e.target.value)}
-                      placeholder="https://www.youtube.com/watch?v=..."
-                      className="w-full bg-black border border-white/[0.07] rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-emerald-500/30 transition-colors font-mono text-white/70 placeholder:text-white/15"
-                      disabled={isSubmitting || !!jobActive} />
-                    <button type="submit" disabled={isSubmitting || !youtubeUrl || !!jobActive}
-                      className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:bg-white/[0.04] disabled:text-white/15 text-black font-bold py-2.5 rounded-lg transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-[10px]">
-                      {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-                      Download &amp; Reverse
-                    </button>
-                  </form>
-                ) : (
-                  <p className="text-[10px] font-mono text-white/25 text-center py-3 leading-relaxed">
-                    Browse to a video on the right →<br />
-                    Click <PlayCircle className="inline w-3 h-3 text-emerald-400 mx-0.5" /> to load it, then<br />
-                    <span className="text-emerald-400">"Reverse This Clip"</span> above the player.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Job status */}
-            <AnimatePresence mode="wait">
-              {job ? (
-                <motion.div key="job" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                  className="bg-[#0f0f0f] border border-white/[0.06] rounded-xl overflow-hidden">
-                  <div className="px-4 py-3 border-b border-white/[0.04] flex items-center justify-between">
-                    <div className={`flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest ${statusColor(job.status)}`}>
-                      {job.status === "completed" ? <CheckCircle2 className="w-3.5 h-3.5" /> :
-                       job.status === "failed" ? <AlertCircle className="w-3.5 h-3.5" /> :
-                       <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                      {job.status}
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-xl font-bold font-mono tabular-nums">{Math.round(job.progress)}%</span>
-                      <button onClick={deleteJob} disabled={isDeleting}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500 hover:text-white text-[9px] font-bold uppercase tracking-widest rounded-lg transition-all disabled:opacity-50">
-                        {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                        {isDeleting ? "..." : "Delete"}
-                      </button>
-                    </div>
-                  </div>
-                  {deleteError && <p className="px-4 py-1 text-[9px] text-rose-400 font-mono bg-rose-500/[0.04] border-b border-rose-500/10">{deleteError}</p>}
-                  <div className="px-4 pt-3 pb-2">
-                    <div className="h-1 w-full bg-black rounded-full overflow-hidden">
-                      <motion.div initial={{ width: 0 }} animate={{ width: `${job.progress}%` }}
-                        className={`h-full ${job.status === "failed" ? "bg-rose-500" : "bg-emerald-500"} shadow-[0_0_10px_rgba(16,185,129,0.35)]`} />
-                    </div>
-                  </div>
-                  {job.chunks && job.chunks.total > 0 && (
-                    <div className="px-4 pb-3 space-y-1">
-                      <div className="flex justify-between text-[8px] font-mono text-white/20 uppercase tracking-widest">
-                        <span>Chunks</span><span>{job.chunks.completed.length}/{job.chunks.total}</span>
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {Array.from({ length: job.chunks.total }).map((_, i) => {
-                          const name = `part_${String(i).padStart(5, "0")}.mp4`;
-                          const done = job.chunks?.completed.includes(name);
-                          return <div key={i} title={`Chunk ${i + 1}: ${done ? "done" : "pending"}`}
-                            onClick={() => done && job.id && browseTo(`/home/owner/Documents/47911b4f-b8b8-4453-90c9-360918fbf53a/Pro-Video-Reverser/jobs/${job.id}/reversed`)}
-                            className={`w-3 h-3 rounded-sm cursor-pointer transition-all ${done ? "bg-emerald-500 hover:bg-emerald-300" : "bg-white/[0.05]"}`} />;
-                        })}
-                      </div>
-                    </div>
-                  )}
-                  {job.status === "failed" && (
-                    <div className="mx-4 mb-3 p-3 bg-rose-500/[0.07] border border-rose-500/15 rounded-lg flex gap-2">
-                      <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
-                      <p className="text-[10px] text-rose-400/70 font-mono">{job.error}</p>
-                    </div>
-                  )}
-                  <div className="border-t border-white/[0.04] h-44 overflow-y-auto custom-scrollbar p-3 font-mono text-[10px] space-y-0.5 bg-black/30">
-                    {job.logs.map((line, i) => (
-                      <div key={i} className="flex gap-2 text-white/35 hover:text-white/55 transition-colors">
-                        <span className="text-white/12 shrink-0 select-none w-6 text-right tabular-nums">{i + 1}</span>
-                        <span className="break-all leading-relaxed">{line}</span>
-                      </div>
-                    ))}
-                    <div ref={logEndRef} />
-                  </div>
-                </motion.div>
-              ) : (
-                <motion.div key="idle" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                  className="border border-dashed border-white/[0.06] rounded-xl p-8 flex flex-col items-center justify-center text-white/10 gap-3">
-                  <TerminalIcon className="w-8 h-8" />
-                  <p className="font-mono text-[9px] uppercase tracking-[0.3em]">No active job</p>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <button className={`tab ${activeTab === "url" ? "active" : ""}`} onClick={() => setActiveTab("url")}>
+              <Link2 size={10} /> YouTube
+            </button>
           </div>
 
-          {/* Right: File browser */}
-          <div className="lg:col-span-7">
-            <div className="bg-[#0f0f0f] border border-white/[0.06] rounded-xl overflow-hidden">
-              <div className="px-4 py-2.5 border-b border-white/[0.04] flex items-center justify-between bg-black/20">
-                <div className="flex items-center gap-2 text-[9px] font-mono text-white/25 uppercase tracking-widest">
-                  <HardDrive className="w-3 h-3" /><span>File Browser</span>
-                </div>
-                <button onClick={() => browserPath && browseTo(browserPath)} className="text-white/15 hover:text-emerald-400 transition-colors" title="Refresh">
-                  <RefreshCw className={`w-3.5 h-3.5 ${browserLoading ? "animate-spin" : ""}`} />
-                </button>
-              </div>
-
+          {activeTab === "browser" ? (
+            <>
+              {/* Breadcrumb */}
               {browserData && (
-                <div className="px-3 py-2 border-b border-white/[0.04] flex items-center gap-0.5 overflow-x-auto bg-black/10 custom-scrollbar">
+                <div className="breadcrumb">
                   {browserData.parent && (
-                    <button onClick={() => browseTo(browserData.parent!)}
-                      className="flex-shrink-0 text-[9px] font-mono text-white/20 hover:text-emerald-400 transition-colors px-1.5 py-0.5 rounded hover:bg-white/[0.04]">↑</button>
+                    <button className="bc-seg" onClick={() => browseTo(browserData.parent!)}>↑</button>
                   )}
                   {browserData.path.split("/").filter(Boolean).map((seg, i, arr) => {
-                    const segPath = "/" + arr.slice(0, i + 1).join("/");
-                    const isLast = i === arr.length - 1;
+                    const p = "/" + arr.slice(0, i + 1).join("/");
+                    const last = i === arr.length - 1;
                     return (
-                      <React.Fragment key={segPath}>
-                        {i > 0 && <span className="text-white/[0.08] text-[9px] font-mono px-0.5">/</span>}
-                        <button onClick={() => !isLast && browseTo(segPath)}
-                          className={`flex-shrink-0 text-[9px] font-mono px-1 py-0.5 rounded transition-colors ${isLast ? "text-emerald-400 cursor-default" : "text-white/20 hover:text-emerald-400 hover:bg-white/[0.04]"}`}>
-                          {seg}
+                      <React.Fragment key={p}>
+                        {i > 0 && <span className="bc-sep">/</span>}
+                        <button className={`bc-seg ${last ? "active" : ""}`} onClick={() => !last && browseTo(p)}>
+                          {seg.length > 14 ? seg.slice(0, 12) + "…" : seg}
                         </button>
                       </React.Fragment>
                     );
                   })}
+                  <div style={{ flex:1 }} />
+                  <button className="icon-btn" onClick={() => browserPath && browseTo(browserPath)} title="Refresh">
+                    <RefreshCw size={10} className={browserLoading ? "animate-spin" : ""} />
+                  </button>
                 </div>
               )}
 
-              <div className="overflow-y-auto custom-scrollbar" style={{ maxHeight: "calc(100vh - 320px)", minHeight: "400px" }}>
+              <div className="panel-scroll">
                 {browserLoading ? (
-                  <div className="flex items-center justify-center py-12 text-white/20 gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span className="text-[10px] font-mono">Loading...</span>
-                  </div>
+                  <div className="empty" style={{ height:120 }}><Loader2 size={16} className="animate-spin" />Loading…</div>
                 ) : browserData ? (
-                  <div>
+                  <>
                     {browserData.dirs.map(dir => (
-                      <button key={dir.path} onClick={() => browseTo(dir.path)}
-                        className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.03] transition-colors text-left group border-b border-white/[0.03]">
-                        <Folder className="w-3.5 h-3.5 text-amber-400/40 group-hover:text-amber-400/70 flex-shrink-0 transition-colors" />
-                        <span className="text-[10px] font-mono text-white/40 group-hover:text-white/65 transition-colors flex-1 truncate">{dir.name}</span>
-                        <ChevronRight className="w-3 h-3 text-white/10 flex-shrink-0" />
-                      </button>
+                      <div key={dir.path} className="fb-row" onClick={() => browseTo(dir.path)}>
+                        <Folder size={11} color="rgba(245,158,11,0.5)" style={{ flexShrink:0 }} />
+                        <span className="fb-name" style={{ color:"var(--text-mid)" }}>{dir.name}</span>
+                        <ChevronRight size={9} color="var(--text-dim)" style={{ flexShrink:0 }} />
+                      </div>
                     ))}
-                    {browserData.dirs.length > 0 && browserData.files.length > 0 && <div className="border-b border-white/[0.06]" />}
+                    {browserData.dirs.length > 0 && browserData.files.length > 0 && (
+                      <div style={{ height:1, background:"var(--border)", margin:"2px 0" }} />
+                    )}
                     {browserData.files.map(f => {
-                      const isActive = selectedFilePath === f.path;
                       const isVid = IS_VIDEO(f.name);
+                      const isAct = selectedFile === f.path;
                       const mb = (f.size / 1024 / 1024).toFixed(1);
                       return (
-                        <div key={f.path} className={`flex items-center gap-3 px-4 py-2.5 transition-colors border-b border-white/[0.03] border-l-2 ${isActive ? "bg-emerald-500/[0.07] border-l-emerald-500 pl-3.5" : "border-l-transparent hover:bg-white/[0.02]"}`}>
-                          {isVid ? (
-                            <button onClick={() => setSelectedFilePath(f.path)} className={`flex-shrink-0 transition-colors ${isActive ? "text-emerald-400" : "text-white/20 hover:text-emerald-400"}`}>
-                              <PlayCircle className="w-4 h-4" />
-                            </button>
-                          ) : (
-                            <span className="flex-shrink-0 w-4 flex items-center justify-center"><span className="w-1.5 h-1.5 rounded-full bg-white/[0.08]" /></span>
-                          )}
-                          <button onClick={() => isVid && setSelectedFilePath(f.path)} disabled={!isVid}
-                            className={`flex-1 text-left text-[10px] font-mono truncate transition-colors ${isActive ? "text-emerald-300 font-semibold" : isVid ? "text-white/50 hover:text-white/75" : "text-white/20 cursor-default"}`}
-                            title={f.name}>{f.name}</button>
-                          <span className="flex-shrink-0 text-[8px] font-mono text-white/18 w-14 text-right tabular-nums">{mb}MB</span>
+                        <div key={f.path} className={`fb-row ${isAct ? "active" : ""}`}
+                          onClick={() => isVid && setSelectedFile(f.path)}>
+                          {isVid
+                            ? <PlayCircle size={11} color={isAct ? "var(--amber)" : "rgba(255,255,255,0.2)"} style={{ flexShrink:0 }} />
+                            : <span style={{ width:11, flexShrink:0 }} />
+                          }
+                          <span className={`fb-name ${isVid ? "video" : "dim"} ${isAct ? "active" : ""}`} title={f.name}>
+                            {f.name}
+                          </span>
+                          <span className="fb-size">{mb}MB</span>
                           <a href={`/api/media?path=${encodeURIComponent(f.path)}`} download={f.name}
                             onClick={e => e.stopPropagation()}
-                            className="flex-shrink-0 text-white/12 hover:text-emerald-400 transition-colors" title={`Download ${f.name}`}>
-                            <Download className="w-3.5 h-3.5" />
+                            style={{ flexShrink:0, color:"var(--text-dim)", display:"flex" }}
+                            title="Download">
+                            <Download size={10} />
                           </a>
                         </div>
                       );
                     })}
                     {browserData.dirs.length === 0 && browserData.files.length === 0 && (
-                      <p className="text-[9px] font-mono text-white/12 italic text-center py-10">Empty directory</p>
+                      <div className="empty" style={{ height:80, fontSize:9 }}>Empty directory</div>
                     )}
-                  </div>
+                  </>
                 ) : (
-                  <p className="text-[9px] font-mono text-white/12 italic text-center py-10">Initializing...</p>
+                  <div className="empty" style={{ height:80, fontSize:9 }}>Initializing…</div>
                 )}
               </div>
+            </>
+          ) : (
+            <div style={{ padding:12, display:"flex", flexDirection:"column", gap:10 }}>
+              <p style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)", lineHeight:1.7 }}>
+                Paste a YouTube URL to download &amp; reverse it.
+              </p>
+              <input
+                className="url-input"
+                type="text"
+                value={youtubeUrl}
+                onChange={e => setYoutubeUrl(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=..."
+                disabled={!!jobActive || isSubmitting}
+                onKeyDown={e => e.key === "Enter" && youtubeUrl && startJob({ url: youtubeUrl })}
+              />
+              <button className="reverse-btn" style={{ justifyContent:"center" }}
+                disabled={!youtubeUrl || !!jobActive || isSubmitting}
+                onClick={() => youtubeUrl && startJob({ url: youtubeUrl })}>
+                {isSubmitting ? <Loader2 size={11} className="animate-spin" /> : <ArrowLeftRight size={11} />}
+                {isSubmitting ? "Starting…" : "Download & Reverse"}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* ── CENTER PANEL: Stage ── */}
+        <div className="panel panel-center">
+          <div className="stage">
+            {/* Player screen */}
+            <div className="stage-screen">
+              {playerSrc ? (
+                <>
+                  <video
+                    key={playerSrc}
+                    controls playsInline autoPlay preload="auto"
+                    style={{ transform: cssTransform }}
+                    onCanPlay={() => setPlaybackError(false)}
+                    onError={() => setPlaybackError(true)}
+                  >
+                    <source src={playerSrc} type="video/mp4" />
+                  </video>
+                  {playbackError && (
+                    <div style={{
+                      position:"absolute", inset:0, background:"rgba(0,0,0,0.95)",
+                      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8
+                    }}>
+                      <AlertCircle size={24} color="#ef4444" />
+                      <span style={{ fontFamily:"var(--mono)", fontSize:10, color:"var(--text-mid)" }}>
+                        Playback failed — incompatible format
+                      </span>
+                      <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"#ef4444" }}>
+                        Delete &amp; re-run
+                      </span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="empty">
+                  <ArrowLeftRight size={24} color="rgba(245,158,11,0.15)" />
+                  <span style={{ fontSize:9 }}>Browse a file — click ▶ to load</span>
+                  <span style={{ fontSize:8, color:"var(--text-dim)" }}>or paste a YouTube URL in the Files panel</span>
+                </div>
+              )}
+            </div>
+
+            {/* Controls toolbar */}
+            <div className="stage-controls">
+              {/* Filename */}
+              {playerFilename && (
+                <span style={{
+                  fontFamily:"var(--mono)", fontSize:9, color:"var(--amber)", opacity:0.7,
+                  maxWidth:200, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
+                  marginRight:4,
+                }} title={playerFilename}>{playerFilename}</span>
+              )}
+
+              {/* Transform controls */}
+              <button className={`xbtn ${xform.flipH ? "on" : ""}`} onClick={() => toggleXform("flipH")} title="Flip horizontal">
+                <FlipHorizontal size={10} /> H
+              </button>
+              <button className={`xbtn ${xform.flipV ? "on" : ""}`} onClick={() => toggleXform("flipV")} title="Flip vertical">
+                <FlipVertical size={10} /> V
+              </button>
+              <button className={`xbtn ${xform.rot180 ? "on" : ""}`} onClick={() => toggleXform("rot180")} title="Rotate 180°">
+                <RotateCcw size={10} /> 180°
+              </button>
+              {(xform.flipH || xform.flipV || xform.rot180) && (
+                <button className="xbtn" onClick={resetXform} title="Reset transform">✕ Reset</button>
+              )}
+
+              <div className="xbtn-sep" />
+
+              {/* Reverse action */}
+              <button className="reverse-btn"
+                disabled={!canReverse}
+                onClick={() => selectedFile && startJob({ sourceFile: selectedFile })}>
+                {isSubmitting
+                  ? <><Loader2 size={11} className="animate-spin" /> Starting…</>
+                  : <><ArrowLeftRight size={11} /> Reverse This Clip</>
+                }
+              </button>
+
+              {!playerSrc && (
+                <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)" }}>
+                  Load a file to reverse it
+                </span>
+              )}
+              {playerSrc && selectedFile?.startsWith("http") && (
+                <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)" }}>
+                  Remote URL — use YouTube tab
+                </span>
+              )}
+              {jobActive && (
+                <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--amber)", opacity:0.7 }}>
+                  Job in progress…
+                </span>
+              )}
+
+              <div style={{ flex:1 }} />
+
+              {/* Copy URL */}
+              {playerSrc && (
+                <button className="icon-btn"
+                  onClick={() => { const p = selectedFile || job?.outputFile; if (p) navigator.clipboard.writeText(`${location.origin}/api/media?path=${encodeURIComponent(p)}`); }}
+                  title="Copy media URL">
+                  <Maximize2 size={11} />
+                </button>
+              )}
             </div>
           </div>
         </div>
-      </main>
 
-      <footer className="text-center py-8">
-        <p className="text-[9px] uppercase tracking-[0.4em] text-white/8 font-mono">Engineered for Stability // No-OOM Guarantee</p>
-      </footer>
+        {/* ── RIGHT PANEL: Pipeline ── */}
+        <div className="panel panel-right">
+          <div className="panel-header">
+            <span className="panel-label"><Terminal size={10} /> Pipeline</span>
+          </div>
 
-      <style dangerouslySetInnerHTML={{ __html: `
-        .custom-scrollbar::-webkit-scrollbar { width: 3px; height: 3px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 10px; }
-        .text-white\\/12 { color: rgba(255,255,255,0.12); }
-        .text-white\\/18 { color: rgba(255,255,255,0.18); }
-        .border-white\\/\\[0\\.04\\] { border-color: rgba(255,255,255,0.04); }
-      `}} />
-    </div>
+          <div className="panel-scroll">
+            <AnimatePresence mode="wait">
+              {job ? (
+                <motion.div key="job" initial={{ opacity:0, y:6 }} animate={{ opacity:1, y:0 }} exit={{ opacity:0 }}>
+
+                  {/* Status row */}
+                  <div style={{
+                    display:"flex", alignItems:"center", gap:8, padding:"10px 12px",
+                    borderBottom:"var(--panel)",
+                  }}>
+                    <div className={`status-dot ${jobActive ? "pulse" : ""}`}
+                      style={{ background: statusColor(job.status) }} />
+                    <span style={{
+                      fontFamily:"var(--mono)", fontSize:10, fontWeight:500, letterSpacing:"0.08em",
+                      textTransform:"uppercase", color: statusColor(job.status), flex:1,
+                    }}>
+                      {job.status}
+                    </span>
+                    <span style={{ fontFamily:"var(--mono)", fontSize:16, fontWeight:600, color:"var(--text)" }}>
+                      {Math.round(job.progress)}%
+                    </span>
+                  </div>
+
+                  {/* Phase + ETA */}
+                  {(job.currentPhase || job.eta) && (
+                    <div style={{
+                      display:"flex", justifyContent:"space-between", alignItems:"center",
+                      padding:"6px 12px", borderBottom:"var(--panel)",
+                      background:"rgba(245,158,11,0.04)",
+                    }}>
+                      {job.currentPhase && (
+                        <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--blue)", flex:1, minWidth:0, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                          {job.currentPhase}
+                        </span>
+                      )}
+                      {job.eta && (
+                        <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)", flexShrink:0, marginLeft:8 }}>
+                          {job.eta}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Progress bar */}
+                  <div style={{ padding:"8px 12px 4px" }}>
+                    <div className="progress-track">
+                      <motion.div className="progress-fill"
+                        initial={{ width:0 }}
+                        animate={{ width:`${job.progress}%` }}
+                        transition={{ duration:0.5 }}
+                        style={{ background: job.status === "failed" ? "var(--red)" : "var(--amber)" }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Chunk map */}
+                  {job.chunks && job.chunks.total > 0 && (
+                    <div style={{ padding:"4px 12px 10px", borderBottom:"var(--panel)" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                        <span style={{ fontFamily:"var(--mono)", fontSize:8, color:"var(--text-dim)", letterSpacing:"0.1em", textTransform:"uppercase" }}>Chunks</span>
+                        <span style={{ fontFamily:"var(--mono)", fontSize:8, color:"var(--text-dim)" }}>
+                          {job.chunks.completed.length}/{job.chunks.total}
+                        </span>
+                      </div>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:3 }}>
+                        {Array.from({ length: job.chunks.total }).map((_, i) => {
+                          const name = `part_${String(i).padStart(5,"0")}.mp4`;
+                          const done = job.chunks?.completed.includes(name);
+                          return (
+                            <div key={i} className="chunk-dot"
+                              style={{ background: done ? "var(--amber)" : "rgba(255,255,255,0.06)" }}
+                              title={`Chunk ${i+1}: ${done ? "done" : "pending"}`}
+                              onClick={() => done && job.id && browseTo(
+                                `/home/owner/Documents/47911b4f-b8b8-4453-90c9-360918fbf53a/Pro-Video-Reverser/jobs/${job.id}/reversed`
+                              )}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Error */}
+                  {job.status === "failed" && (
+                    <div style={{ margin:"8px 12px", padding:"8px 10px", background:"rgba(239,68,68,0.08)", border:"1px solid rgba(239,68,68,0.15)", borderRadius:"var(--radius)", display:"flex", gap:6 }}>
+                      <AlertCircle size={12} color="#ef4444" style={{ flexShrink:0, marginTop:1 }} />
+                      <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"rgba(239,68,68,0.8)", lineHeight:1.6 }}>{job.error}</span>
+                    </div>
+                  )}
+
+                  {/* Delete */}
+                  <div style={{ padding:"8px 12px", borderBottom:"var(--panel)", display:"flex", alignItems:"center", gap:8 }}>
+                    <span style={{ fontFamily:"var(--mono)", fontSize:8, color:"var(--text-dim)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1 }}>
+                      {job.id.slice(0,16)}…
+                    </span>
+                    <button className="del-btn" disabled={isDeleting} onClick={deleteJob}>
+                      {isDeleting ? <Loader2 size={9} className="animate-spin" /> : <Trash2 size={9} />}
+                      {isDeleting ? "Wiping…" : "Delete"}
+                    </button>
+                  </div>
+                  {deleteError && (
+                    <div style={{ padding:"4px 12px", fontFamily:"var(--mono)", fontSize:8, color:"var(--red)" }}>{deleteError}</div>
+                  )}
+
+                  {/* Logs */}
+                  <div style={{ borderBottom:"var(--panel)" }}>
+                    <div className="rp-section-header" onClick={() => setLogsOpen(p => !p)}>
+                      <span className="panel-label"><Terminal size={9} /> Logs</span>
+                      <span style={{ fontFamily:"var(--mono)", fontSize:9, color:"var(--text-dim)" }}>{logsOpen ? "▲" : "▼"}</span>
+                    </div>
+                    {logsOpen && (
+                      <div style={{ maxHeight:280, overflowY:"auto", paddingBottom:8 }}>
+                        {job.logs.map((line, i) => (
+                          <div key={i} className="log-line">
+                            <span className="ln">{i + 1}</span>
+                            <span style={{ wordBreak:"break-all" }}>{line}</span>
+                          </div>
+                        ))}
+                        <div ref={logEndRef} />
+                      </div>
+                    )}
+                  </div>
+
+                </motion.div>
+              ) : (
+                <motion.div key="idle" initial={{ opacity:0 }} animate={{ opacity:1 }} exit={{ opacity:0 }}>
+                  <div className="empty" style={{ height:200, gap:8 }}>
+                    <ArrowLeftRight size={20} color="rgba(245,158,11,0.15)" />
+                    <span style={{ fontSize:9 }}>No active job</span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+
+      </div>
+    </>
   );
 }
