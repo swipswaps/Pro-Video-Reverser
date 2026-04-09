@@ -587,18 +587,18 @@ async function startServer() {
 
     const range = req.headers.range;
 
-    // ETag based on file size + mtime — lets Firefox revalidate without re-downloading.
-    // If the file hasn't changed (same job output), Firefox uses its buffer.
-    // If the file changed (new reverse run), the ETag differs and Firefox re-fetches.
+    // ETag for cache validation — only respond 304 when there is NO Range header.
+    // For Range requests, 304 is invalid (RFC 7233 §4.1) — must always return 206 + bytes.
     const mtime  = fs.statSync(filePath).mtimeMs;
     const etag   = `"${fileSize}-${Math.floor(mtime)}"`;
     const ifNone = req.headers["if-none-match"];
-    if (ifNone === etag) {
+    const isRange = !!req.headers.range;
+    if (!isRange && ifNone === etag) {
       res.writeHead(304); res.end(); return;
     }
 
     const cacheHeaders = {
-      'Cache-Control': 'no-cache',   // revalidate on every load, but use cache if ETag matches
+      'Cache-Control': 'no-cache',
       'ETag':          etag,
       'Accept-Ranges': 'bytes',
     };
