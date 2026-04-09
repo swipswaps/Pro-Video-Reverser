@@ -193,6 +193,18 @@ export default function App() {
 
   useEffect(() => { setPlaybackError(false); }, [selectedFile, job?.outputFile]);
 
+  // Keep-warm: prevent OS page-cache eviction during player pause.
+  // Linux drops files from page cache after ~20s idle — causing the cold-start
+  // delay on resume. A lightweight ping every 10s resets the eviction timer.
+  useEffect(() => {
+    const fileToWarm = selectedFile || job?.outputFile;
+    if (!fileToWarm || fileToWarm.startsWith("http")) return;
+    const ping = () => fetch(`/api/media/warm?path=${encodeURIComponent(fileToWarm)}`).catch(() => {});
+    ping();
+    const t = setInterval(ping, 10000);
+    return () => clearInterval(t);
+  }, [selectedFile, job?.outputFile]);
+
   // ── Actions ──────────────────────────────────────────────────────────────
   const startJob = async (opts: { url?: string; sourceFile?: string }) => {
     setIsSubmitting(true);
@@ -775,6 +787,8 @@ export default function App() {
           0%,100% { opacity: 1; } 50% { opacity: 0.5; }
         }
         .progress-fill.paused { animation: paused-shimmer 2s ease infinite; }
+
+        .update-pill {
           padding: 2px 8px;
           background: var(--amber-dim);
           border: 1px solid rgba(245,158,11,0.3);
@@ -801,7 +815,7 @@ export default function App() {
             <span style={{ fontFamily:"var(--sans)", fontSize:12, fontWeight:700, letterSpacing:"0.05em", textTransform:"uppercase" }}>
               Pro Reverser
             </span>
-            <span style={{ fontFamily:"var(--mono)", fontSize:8, color:"var(--text-dim)", letterSpacing:"0.15em" }}>v1.4</span>
+            <span style={{ fontFamily:"var(--mono)", fontSize:8, color:"var(--text-dim)", letterSpacing:"0.15em" }}>v1.5</span>
           </div>
 
           {/* divider */}
