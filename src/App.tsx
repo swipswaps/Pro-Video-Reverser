@@ -258,16 +258,15 @@ export default function App() {
   }, []);
 
   const reverseHistoryEntry = (h: HistoryEntry) => {
-    // Re-reverse the original source: if outputFile exists use it, otherwise re-queue by URL
     if (h.outputFile && h.outputFile.includes("/download/")) {
-      // outputFile is the reversed result; source would be in download/input.mp4
       const sourceDir = h.outputFile.replace("/reversed_final.mp4", "/download/input.mp4");
       startJob({ sourceFile: sourceDir });
     } else {
-      // Fall back to re-downloading
       startJob({ url: h.url });
     }
   };
+
+  const fetchHistory = async () => {
     try {
       const r = await fetch("/api/jobs/history");
       if (r.ok) setHistory(await r.json());
