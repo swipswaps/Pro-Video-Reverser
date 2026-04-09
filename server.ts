@@ -277,8 +277,17 @@ async function startServer() {
     console.log(`SERVER: Received request to initialize job for ${jobKey}`);
     const jobId = crypto.createHash("md5").update(jobKey).digest("hex");
     
-    // Force fresh start
+    // Force fresh start — terminate any running process for this job first
     const jobDir = path.join(JOBS_DIR, jobId);
+    if (activeProc[jobId]?.pid) {
+      try { process.kill(activeProc[jobId]!.pid!, "SIGTERM"); } catch {}
+      activeProc[jobId] = null;
+    }
+    if (runningJobId === jobId) {
+      runningJobId = null;
+    }
+    const queueIdx = jobQueue.indexOf(jobId);
+    if (queueIdx !== -1) jobQueue.splice(queueIdx, 1);
     if (fs.existsSync(jobDir)) {
       console.log(`SERVER: Wiping existing job directory for ${jobId}`);
       await fs.remove(jobDir);
@@ -485,69 +494,79 @@ async function startServer() {
   //   E. Keep-warm: /api/media/warm?path=X — called by the client every 10s
   //      while a file is loaded in the player. Prevents page-cache eviction.
 
-  const openFdPool: Record<string, { fd: number; size: number; lastAccess: number }> = {};
+  // ── Media streaming — stat cache + fresh fd per request ──────────────────
+  //
+  // WHY NOT A SHARED FD:
+  //   A single fd has one kernel file-position pointer. When Firefox issues
+  //   2-3 simultaneous range requests on seek (which it always does), multiple
+  //   createReadStream calls sharing the same fd race on that pointer — one
+  //   stream's read advances the cursor mid-read of the other, producing
+  //   corrupted/short responses. Firefox stalls waiting for valid data → spinner.
+  //
+  // THE FIX:
+  //   Cache only the stat (size + mtime) and the first-warmup flag per path.
+  //   Each range request opens its own fd, reads, closes. The OS page cache
+  //   means subsequent opens of the same file are effectively free — the data
+  //   is already in RAM, the open() syscall just creates a new position pointer.
+  //
+  // WARMUP:
+  //   On first access, we do one synchronous 2MB read to populate page cache.
+  //   After that, all opens hit the cache regardless of fd count.
 
-  // Close FDs idle > 300s (was 60s — keep warm longer under memory pressure)
+  const statCache: Record<string, { size: number; warmed: boolean; lastAccess: number }> = {};
+
+  // Evict stale stat entries every 60s
   setInterval(() => {
     const now = Date.now();
-    for (const [p, entry] of Object.entries(openFdPool)) {
-      if (now - entry.lastAccess > 300000) {
-        try { fs.closeSync(entry.fd); } catch {}
-        delete openFdPool[p];
-      }
+    for (const [p, e] of Object.entries(statCache)) {
+      if (now - e.lastAccess > 300000) delete statCache[p];
     }
-  }, 30000);
+  }, 60000);
 
-  function getWarmFd(filePath: string, byteOffset = 0): { fd: number; size: number } {
+  function getFileStat(filePath: string): { size: number } {
     const now = Date.now();
-    if (openFdPool[filePath]) {
-      openFdPool[filePath].lastAccess = now;
-      // If caller wants warmup at a specific offset (seek), read 2MB from there
-      if (byteOffset > 0) {
-        const { fd, size } = openFdPool[filePath];
-        const warmLen = Math.min(2 * 1024 * 1024, size - byteOffset);
-        if (warmLen > 0) {
-          const buf = Buffer.allocUnsafe(warmLen);
-          try { fs.readSync(fd, buf, 0, warmLen, byteOffset); } catch {}
-        }
-      }
-      return openFdPool[filePath];
+    if (statCache[filePath]) {
+      statCache[filePath].lastAccess = now;
+      return statCache[filePath];
     }
-    const fd   = fs.openSync(filePath, "r");
-    const size = fs.fstatSync(fd).size;
-    // Warmup read: 2MB from offset 0 — covers moov atom + first keyframes
-    // (increased from 256KB: under memory pressure the kernel needs a bigger
-    // initial read to resist eviction for the typical ~500MB reversed file)
-    const warmLen = Math.min(2 * 1024 * 1024, size);
-    const warmBuf = Buffer.allocUnsafe(warmLen);
-    try { fs.readSync(fd, warmBuf, 0, warmLen, 0); } catch {}
-    openFdPool[filePath] = { fd, size, lastAccess: now };
-    return { fd, size };
+    const size = fs.statSync(filePath).size;
+    // One-time warmup: open, read 2MB into page cache, close.
+    // Every subsequent open — even with a fresh fd — hits the cached pages.
+    try {
+      const warmFd  = fs.openSync(filePath, "r");
+      const warmLen = Math.min(2 * 1024 * 1024, size);
+      const warmBuf = Buffer.allocUnsafe(warmLen);
+      fs.readSync(warmFd, warmBuf, 0, warmLen, 0);
+      fs.closeSync(warmFd);
+    } catch {}
+    statCache[filePath] = { size, warmed: true, lastAccess: now };
+    return { size };
   }
 
-  // Keep-warm endpoint — client calls every 5s while player is loaded.
-  // Also accepts ?fraction=0.0-1.0 on seek to pre-warm the seek target region.
+  // Keep-warm endpoint: called by client every 10s while player is loaded.
+  // Also accepts ?fraction=0.0-1.0 to pre-warm a seek target region.
   app.get("/api/media/warm", (req, res) => {
-    const filePath   = req.query.path as string;
-    const byteOffset = parseInt((req.query.offset as string) || "0", 10) || 0;
-    const fraction   = parseFloat((req.query.fraction as string) || "0") || 0;
+    const filePath = req.query.path as string;
+    const fraction = parseFloat((req.query.fraction as string) || "0") || 0;
     if (!filePath) return res.status(400).json({ error: "path required" });
     try {
-      if (fs.existsSync(filePath)) {
-        const entry = getWarmFd(filePath, byteOffset);
-        // Seek warmup: pre-read 2MB at the fraction position in the file
-        if (fraction > 0 && fraction < 1) {
-          const seekByte = Math.floor(fraction * entry.size);
-          const warmLen  = Math.min(2 * 1024 * 1024, entry.size - seekByte);
-          if (warmLen > 0) {
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File not found" });
+      const { size } = getFileStat(filePath);
+      // Seek pre-warm: read 2MB starting at the seek target byte offset
+      if (fraction > 0 && fraction < 1) {
+        const seekByte = Math.floor(fraction * size);
+        const warmLen  = Math.min(2 * 1024 * 1024, size - seekByte);
+        if (warmLen > 0) {
+          try {
+            const fd  = fs.openSync(filePath, "r");
             const buf = Buffer.allocUnsafe(warmLen);
-            try { fs.readSync(entry.fd, buf, 0, warmLen, seekByte); } catch {}
-          }
+            fs.readSync(fd, buf, 0, warmLen, seekByte);
+            fs.closeSync(fd);
+          } catch {}
         }
-        res.json({ warmed: true, offset: byteOffset, fraction });
-      } else {
-        res.status(404).json({ error: "File not found" });
       }
+      if (statCache[filePath]) statCache[filePath].lastAccess = Date.now();
+      res.json({ warmed: true, fraction });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -556,77 +575,52 @@ async function startServer() {
   app.get("/api/media", (req, res) => {
     const filePath = req.query.path as string;
     if (!filePath || !fs.existsSync(filePath)) {
-      console.error(`SERVER: Media not found: ${filePath}`);
       return res.status(404).json({ error: "File not found" });
     }
 
-    let fd: number;
     let fileSize: number;
     try {
-      ({ fd, size: fileSize } = getWarmFd(filePath));
+      ({ size: fileSize } = getFileStat(filePath));
     } catch (e: any) {
-      console.error(`SERVER: Failed to open ${filePath}:`, e.message);
-      return res.status(500).json({ error: "Failed to open file" });
+      return res.status(500).json({ error: "stat failed: " + e.message });
     }
 
     const range = req.headers.range;
-
-    // Shared cache headers — tells Firefox to reuse what it buffered
     const cacheHeaders = {
       'Cache-Control': 'public, max-age=3600',
-      'Connection':    'keep-alive',
+      'Accept-Ranges': 'bytes',
     };
 
     if (range) {
-      const parts    = range.replace(/bytes=/, "").split("-");
-      const start    = parseInt(parts[0], 10);
-      const end      = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = (end - start) + 1;
+      const parts     = range.replace(/bytes=/, "").split("-");
+      const start     = parseInt(parts[0], 10);
+      const end       = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = end - start + 1;
 
-      // Stream from the pooled FD.
-      // CRITICAL: path must be null (not "") when using fd — passing any string
-      // causes Node to open that path as a separate file descriptor, ignoring fd
-      // entirely, which means every seek re-opens the file from scratch.
-      const file = fs.createReadStream(null as any, {
-        fd,
+      // Fresh fd per range request — no shared cursor, no concurrent corruption.
+      // Page cache means this open() costs ~0.1ms, not a disk seek.
+      const file = fs.createReadStream(filePath, {
         start,
         end,
-        autoClose: false,          // we manage FD lifetime in the pool
-        highWaterMark: 1024 * 1024 // 1MB — fewer round trips on HDD
+        highWaterMark: 1024 * 1024, // 1MB — fewer small reads on HDD
       });
 
       res.writeHead(206, {
         ...cacheHeaders,
         'Content-Range':  `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges':  'bytes',
         'Content-Length': chunksize,
         'Content-Type':   'video/mp4',
       });
       file.pipe(res);
 
-      // Async read-ahead: after responding, pre-warm the next 2MB into page cache
-      // so the next seek request hits RAM. Done AFTER pipe starts so it doesn't
-      // block Firefox from receiving the first byte.
-      if (start > 0) {
-        const ahead    = Math.min(start + 2 * 1024 * 1024, fileSize - 1);
-        const aheadLen = ahead - start;
-        if (aheadLen > 0) {
-          const buf = Buffer.allocUnsafe(aheadLen);
-          fs.read(fd, buf, 0, aheadLen, start, () => {}); // fire-and-forget
-        }
-      }
     } else {
-      const file = fs.createReadStream(null as any, {
-        fd,
-        autoClose: false,
-        highWaterMark: 1024 * 1024
+      const file = fs.createReadStream(filePath, {
+        highWaterMark: 1024 * 1024,
       });
-
       res.writeHead(200, {
         ...cacheHeaders,
         'Content-Length': fileSize,
         'Content-Type':   'video/mp4',
-        'Accept-Ranges':  'bytes',
       });
       file.pipe(res);
     }
